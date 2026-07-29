@@ -6,6 +6,7 @@
 #include "leds.h"
 #include "display.h"
 #include "web.h"
+#include "pogdev.h"
 
 // Connexion STA bas-niveau, non bloquante, compatible WPA2 et WPA2/WPA3 transition.
 static void wifiStaConnect() {
@@ -65,6 +66,7 @@ void loop() {
   if (!mdns && WiFi.status() == WL_CONNECTED) {
     mdns = true;
     if (MDNS.begin(MDNS_NAME)) MDNS.addService("http", "tcp", 80);
+    pogdevBegin();
     Serial.printf("[WiFi] OK IP: %s -> http://%s.local\n", WiFi.localIP().toString().c_str(), MDNS_NAME);
   }
 }
