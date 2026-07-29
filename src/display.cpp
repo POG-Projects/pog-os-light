@@ -6,10 +6,9 @@
 #include "leds.h"
 #include "display.h"
 
-// Deux cablages I2C possibles (SDA/SCL normal ou inverse), choisi au boot par scan.
-static U8G2_SSD1306_128X64_NONAME_F_HW_I2C u8gA(U8G2_R0, U8X8_PIN_NONE, OLED_SCL_PIN, OLED_SDA_PIN);
-static U8G2_SSD1306_128X64_NONAME_F_HW_I2C u8gB(U8G2_R0, U8X8_PIN_NONE, OLED_SDA_PIN, OLED_SCL_PIN);
-static U8G2* g_disp = &u8gA;
+// Construit apres le chargement de la configuration : les broches I2C ne sont
+// plus figees dans le binaire.
+static U8G2* g_disp = nullptr;
 #define u8g2 (*g_disp)
 
 volatile bool g_oledFound   = false;
@@ -94,6 +93,7 @@ static void drawSettings() {
 }
 
 static void draw() {
+  if (!g_oledFound || !g_disp) return;
   u8g2.clearBuffer();
   if (s_level == LV_MAIN) drawMain(); else drawSettings();
   u8g2.sendBuffer();
@@ -162,47 +162,54 @@ static void uiTask(void* arg) {
 // Scan I2C COMPLET 1->127 (comme PogLight, qui detectait l'ecran). Scanner toute la
 // plage "reveille" le bus avant 0x3C : la toute 1ere transaction apres Wire.begin
 // NAK souvent, ce qui faisait echouer un test direct de 0x3C.
-static int i2cFind(int sda, int scl) {
+static int i2cFind(int sda, int scl, uint8_t target) {
   Wire.begin(sda, scl); delay(30);
   int f = -1;
   for (uint8_t a = 1; a < 127; a++) {
     Wire.beginTransmission(a);
-    if (Wire.endTransmission() == 0) { f = a; break; }
+    bool answered = Wire.endTransmission() == 0;
+    if (a == target && answered) { f = a; break; }
   }
   Wire.end();
   return f;
 }
 
 void displayBegin() {
-#ifdef POGLIGHT_HEADLESS
-  return;
-#else
   buttonsBegin();
-  // L'OLED peut mettre ~1s a repondre apres mise sous tension : on ressaie pendant ~3s
-  // (PogLight marchait car ledsTest() introduisait ce delai avant le scan I2C).
-  int a = -1; bool swap = false;
-  for (int t = 0; t < 12 && a < 0; t++) {
-    a = i2cFind(OLED_SDA_PIN, OLED_SCL_PIN); if (a >= 0) { swap = false; break; }   // SDA=13/SCL=11
-    a = i2cFind(OLED_SCL_PIN, OLED_SDA_PIN); if (a >= 0) { swap = true;  break; }   // inverse
-    delay(200);
-  }
-  g_oledFound   = (a >= 0);
-  g_oledAddr    = a;
-  g_oledSwapped = (a >= 0) ? swap : g_config.oledSwap;   // pas trouve -> orientation manuelle (reglage)
-  g_disp = g_oledSwapped ? &u8gB : &u8gA;
+  if (g_config.oledEnabled) {
+    // Certains panneaux mettent pres d'une seconde a repondre apres leur mise
+    // sous tension. On scanne uniquement le bus explicitement configure.
+    int address = -1;
+    for (int attempt = 0; attempt < 12 && address < 0; ++attempt) {
+      address = i2cFind(g_config.oledSda, g_config.oledScl, g_config.oledAddress);
+      if (address < 0) delay(200);
+    }
+    g_oledFound = address >= 0;
+    g_oledAddr = address;
+    g_oledSwapped = false;
 
-  u8g2.setI2CAddress((a >= 0 ? a : OLED_ADDR) * 2);
-  u8g2.begin();
-  u8g2.setBusClock(400000);
-  u8g2.setContrast(255);
-  // Splash plein ecran : si le panneau fonctionne, il s'allume entierement ~0.8s.
-  u8g2.clearBuffer(); u8g2.drawBox(0, 0, 128, 64); u8g2.sendBuffer();
-  delay(800);
-  u8g2.clearBuffer();
-  u8g2.setFont(u8g2_font_7x14B_tf); u8g2.drawStr(8, 30, "PogLight");
-  u8g2.setFont(u8g2_font_5x8_tf);   u8g2.drawStr(8, 46, "controleur LED");
-  u8g2.sendBuffer();
+    if (g_oledFound) {
+      g_disp = new U8G2_SSD1306_128X64_NONAME_F_HW_I2C(
+          U8G2_R0, U8X8_PIN_NONE, g_config.oledScl, g_config.oledSda);
+      u8g2.setI2CAddress((address >= 0 ? address : g_config.oledAddress) * 2);
+      u8g2.begin();
+      u8g2.setBusClock(400000);
+      u8g2.setContrast(255);
+      // Splash plein ecran : confirme visuellement le cablage et l'adresse.
+      u8g2.clearBuffer(); u8g2.drawBox(0, 0, 128, 64); u8g2.sendBuffer();
+      delay(800);
+      u8g2.clearBuffer();
+      u8g2.setFont(u8g2_font_7x14B_tf); u8g2.drawStr(8, 30, "PogLight");
+      u8g2.setFont(u8g2_font_5x8_tf);   u8g2.drawStr(8, 46, "controleur LED");
+      u8g2.sendBuffer();
+    }
+  } else {
+    g_oledFound = false;
+    g_oledAddr = -1;
+    g_oledSwapped = false;
+  }
   s_sel = g_config.pattern;
-  xTaskCreatePinnedToCore(uiTask, "ui", 6144, nullptr, 1, nullptr, 0);
-#endif
+  if (g_oledFound || g_config.buttonsEnabled) {
+    xTaskCreatePinnedToCore(uiTask, "ui", 6144, nullptr, 1, nullptr, 0);
+  }
 }

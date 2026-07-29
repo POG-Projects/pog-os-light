@@ -6,3 +6,6 @@ void pogdevBegin();
 
 // Demande une publication immédiate après une modification locale ou web.
 void pogdevNotifyState();
+
+// Republie aussi la description des entites (sections, noms et utilites).
+void pogdevNotifyConfig();

@@ -1,5 +1,7 @@
 # PogLight
 
+<img src="assets/brand/icon.png" alt="POG Light icon" width="96">
+
 PogLight est un controleur autonome de bandes LED pour ESP32. Il fonctionne sans
 cloud et se pilote depuis une interface web locale. Une variante ESP32-S3 prend
 aussi en charge un ecran OLED et quatre boutons tactiles ; la variante ESP32-C3
@@ -102,6 +104,36 @@ pio device monitor -b 115200
 
 Le controleur continue d'animer les LED si le Wi-Fi est indisponible.
 
+## Sections et utilites
+
+Une bande adressable peut etre decoupee en huit sections independantes depuis
+l'onglet **Bande**. Chaque section conserve une identite stable, un nom, sa
+plage de LED, ses couleurs, son effet, sa vitesse et sa luminosite.
+
+Une utilite de base peut etre definie pour la lampe entiere et pour chaque
+section : ambiance, travail, veilleuse, balisage, television, indicateur
+d'etat, reveil ou decoration. PogLight publie chaque section comme une entite
+lumineuse distincte dans PogHome et transmet l'utilite, ainsi que les bornes
+physiques, dans les metadonnees de l'entite.
+
+Sans section, le controleur conserve exactement son comportement historique :
+la bande complete reste une seule lumiere.
+
+## Ecran et boutons
+
+L'ecran OLED I2C est optionnel. Ses GPIO SDA/SCL et son adresse (`0x3C` ou
+`0x3D`) se configurent depuis l'onglet **Bande**, sans recompilation.
+
+Quatre commandes locales peuvent egalement etre activees et affectees a
+n'importe quels GPIO compatibles : haut, bas, gauche et droite. Deux types
+d'entree sont pris en charge :
+
+- poussoir entre le GPIO et GND, avec pull-up interne ;
+- electrode capacitive sur les puces ESP32 qui disposent du peripherique touch.
+
+L'interface refuse les GPIO dupliques ou deja utilises par la sortie LED et
+l'OLED. Une modification de cablage est appliquee apres redemarrage.
+
 ## PogHome
 
 Une fois PogLight connecte au meme reseau local que PogHome, aucune adresse IP
@@ -113,9 +145,22 @@ n'est a saisir :
    NVS de l'ESP32 et toutes les commandes restent strictement dans son propre
    espace MQTT.
 
-PogHome expose alors l'allumage, la luminosite, les deux couleurs, l'effet, la
-vitesse, le sens de la bande et le signal Wi-Fi. Les changements realises depuis
-l'interface web ou l'ecran sont synchronises vers PogHome, et inversement.
+PogHome expose l'integralite des reglages utiles sous forme de controles natifs :
+
+- scene principale : allumage, luminosite, couleurs, effet, vitesse et utilite ;
+- bande : GPIO, nombre de LED, limite de courant, ordre des couleurs, sens et
+  mode adressable ou PWM ;
+- OLED et boutons : activation, mode, adresse I2C et affectation de chaque GPIO ;
+- sections : creation ou suppression (jusqu'a huit), activation, nom, bornes,
+  utilite, couleurs, luminosite, effet et vitesse ;
+- reseau : SSID et remplacement du mot de passe Wi-Fi ;
+- diagnostic : puissance du signal Wi-Fi.
+
+Les changements realises depuis l'interface web ou l'ecran sont synchronises
+vers PogHome, et inversement. Un changement de cablage ou de Wi-Fi est persiste,
+confirme sur MQTT puis applique par un redemarrage automatique. Le mot de passe
+Wi-Fi peut etre remplace depuis PogHome, mais n'est jamais republie en clair
+dans l'etat MQTT.
 
 L'identite materielle `ESP-POGLIGHT-<MAC>` et le secret d'adoption sont generes
 par le controleur et restent stables entre les redemarrages. En cas de changement
