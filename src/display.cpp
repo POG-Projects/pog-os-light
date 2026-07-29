@@ -1,6 +1,7 @@
 #include <U8g2lib.h>
 #include <Wire.h>
 #include "config.h"
+#include "pogdev.h"
 #include "buttons.h"
 #include "leds.h"
 #include "display.h"
@@ -40,7 +41,9 @@ static void lock()   { xSemaphoreTake(g_configMutex, portMAX_DELAY); }
 static void unlock() { xSemaphoreGive(g_configMutex); s_dirty = true; }
 static void saveIfDirty() {
   if (!s_dirty) return;
-  xSemaphoreTake(g_configMutex, portMAX_DELAY); configSave(); xSemaphoreGive(g_configMutex); s_dirty = false;
+  xSemaphoreTake(g_configMutex, portMAX_DELAY); configSave(); xSemaphoreGive(g_configMutex);
+  pogdevNotifyState();
+  s_dirty = false;
 }
 
 // ---------------- rendu ----------------

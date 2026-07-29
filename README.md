@@ -14,6 +14,7 @@ SuperMini est compacte et entierement pilotee par le web.
 - limite de courant logicielle reglable pour proteger l'alimentation ;
 - apercu de la bande dans le navigateur ;
 - portail de configuration Wi-Fi et nom local `poglight.local` ;
+- découverte, adoption et contrôle automatiques dans PogHome ;
 - mise a jour du firmware par OTA ;
 - configuration persistante en NVS ;
 - fonctionnement LED independant de la connexion reseau.
@@ -101,6 +102,25 @@ pio device monitor -b 115200
 
 Le controleur continue d'animer les LED si le Wi-Fi est indisponible.
 
+## PogHome
+
+Une fois PogLight connecte au meme reseau local que PogHome, aucune adresse IP
+n'est a saisir :
+
+1. PogLight detecte le service `_poghome._tcp` annonce par PogHome via mDNS ;
+2. il apparait automatiquement dans **Reglages > Appareils POG a adopter** ;
+3. apres validation dans PogHome, ses identifiants MQTT sont stockes dans la
+   NVS de l'ESP32 et toutes les commandes restent strictement dans son propre
+   espace MQTT.
+
+PogHome expose alors l'allumage, la luminosite, les deux couleurs, l'effet, la
+vitesse, le sens de la bande et le signal Wi-Fi. Les changements realises depuis
+l'interface web ou l'ecran sont synchronises vers PogHome, et inversement.
+
+L'identite materielle `ESP-POGLIGHT-<MAC>` et le secret d'adoption sont generes
+par le controleur et restent stables entre les redemarrages. En cas de changement
+d'adresse IP de PogHome, PogLight relance automatiquement la decouverte mDNS.
+
 ## Architecture
 
 | Fichier | Role |
@@ -112,6 +132,7 @@ Le controleur continue d'animer les LED si le Wi-Fi est indisponible.
 | `src/web_ui.h` | Interface web embarquee |
 | `src/display.*` | Interface OLED et navigation locale sur ESP32-S3 |
 | `src/buttons.*` | Lecture des boutons tactiles sur ESP32-S3 |
+| `src/pogdev.*` | Decouverte, adoption securisee et bus MQTT PogHome |
 
 ## API locale
 

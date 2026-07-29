@@ -8,6 +8,7 @@
 #include "display.h"
 #include "web_ui.h"
 #include "web.h"
+#include "pogdev.h"
 
 static WebServer server(80);
 static DNSServer dns;
@@ -52,6 +53,7 @@ static void handleSaveConfig() {
   bool hw = (g_config.ledPin != oP) || (g_config.numLeds != oN) || (g_config.analog != oA) || (g_config.oledSwap != oS);
   configSave();
   xSemaphoreGive(g_configMutex);
+  pogdevNotifyState();
   if (hw) { server.send(200, "application/json", "{\"ok\":true,\"reboot\":true}"); delay(500); ESP.restart(); }
   else server.send(200, "application/json", "{\"ok\":true}");
 }
@@ -67,6 +69,27 @@ static void handleWifi() {
   xSemaphoreGive(g_configMutex);
   server.send(200, "application/json", "{\"ok\":true,\"reboot\":true}");
   delay(400); ESP.restart();
+}
+
+// Premier démarrage : matériel + Wi-Fi sont enregistrés ensemble pour éviter
+// deux redémarrages au milieu de l'onboarding mobile.
+static void handleSetup() {
+  if (!server.hasArg("plain")) { server.send(400, "application/json", "{\"ok\":false,\"error\":\"body requis\"}"); return; }
+  JsonDocument doc;
+  if (deserializeJson(doc, server.arg("plain"))) { server.send(400, "application/json", "{\"ok\":false,\"error\":\"json invalide\"}"); return; }
+  if (!doc["wifiSsid"].is<const char*>() || !strlen(doc["wifiSsid"].as<const char*>())) {
+    server.send(400, "application/json", "{\"ok\":false,\"error\":\"wifi requis\"}");
+    return;
+  }
+  xSemaphoreTake(g_configMutex, portMAX_DELAY);
+  configApplyJson(doc.as<JsonObjectConst>());
+  g_config.wifiSsid = doc["wifiSsid"].as<String>();
+  if (doc["wifiPass"].is<const char*>()) g_config.wifiPass = doc["wifiPass"].as<String>();
+  configSave();
+  xSemaphoreGive(g_configMutex);
+  server.send(200, "application/json", "{\"ok\":true,\"reboot\":true}");
+  delay(1800);
+  ESP.restart();
 }
 
 static void handleScan() {
@@ -116,6 +139,7 @@ void webBegin(bool apMode) {
   server.on("/api/scan",    HTTP_GET,  handleScan);
   server.on("/api/config",  HTTP_POST, handleSaveConfig);
   server.on("/api/wifi",    HTTP_POST, handleWifi);
+  server.on("/api/setup",   HTTP_POST, handleSetup);
   server.on("/api/reboot",  HTTP_POST, handleReboot);
   server.on("/api/ota",     HTTP_POST, handleOtaDone, handleOtaUpload);
   server.on("/generate_204", handleNotFound);
