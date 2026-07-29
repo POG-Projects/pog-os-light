@@ -1,0 +1,7 @@
+.pio/
+.vscode/
+.DS_Store
+dist/
+src/idf_component.yml
+*.bin
+*.elf
