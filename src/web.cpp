@@ -11,6 +11,7 @@
 #include "poglight_icon.h"
 #include "web.h"
 #include "pogdev.h"
+#include "ota_update.h"
 
 static WebServer server(80);
 static DNSServer dns;
@@ -140,6 +141,34 @@ static void handleLeds() {
 
 static void handleReboot() { server.send(200, "application/json", "{\"ok\":true}"); delay(300); ESP.restart(); }
 
+static void handleUpdateStatus() {
+  JsonDocument doc;
+  otaUpdateFillJson(doc.to<JsonObject>());
+  String out;
+  serializeJson(doc, out);
+  server.sendHeader("Cache-Control", "no-store");
+  server.send(200, "application/json", out);
+}
+
+static void handleUpdateCheck() {
+  if (WiFi.status() != WL_CONNECTED) {
+    server.send(503, "application/json",
+                "{\"ok\":false,\"error\":\"wifi indisponible\"}");
+    return;
+  }
+  otaUpdateRequestCheck();
+  server.send(202, "application/json", "{\"ok\":true}");
+}
+
+static void handleUpdateInstall() {
+  if (!otaUpdateRequestInstall()) {
+    server.send(409, "application/json",
+                "{\"ok\":false,\"error\":\"aucune mise a jour disponible\"}");
+    return;
+  }
+  server.send(202, "application/json", "{\"ok\":true}");
+}
+
 static void handleOtaDone() {
   bool ok = !Update.hasError();
   server.sendHeader("Connection", "close");
@@ -172,11 +201,15 @@ void webBegin(bool apMode) {
   server.on("/api/wifi",    HTTP_POST, handleWifi);
   server.on("/api/setup",   HTTP_POST, handleSetup);
   server.on("/api/reboot",  HTTP_POST, handleReboot);
+  server.on("/api/update",  HTTP_GET,  handleUpdateStatus);
+  server.on("/api/update/check", HTTP_POST, handleUpdateCheck);
+  server.on("/api/update/install", HTTP_POST, handleUpdateInstall);
   server.on("/api/ota",     HTTP_POST, handleOtaDone, handleOtaUpload);
   server.on("/generate_204", handleNotFound);
   server.on("/gen_204",      handleNotFound);
   server.onNotFound(handleNotFound);
   server.begin();
+  if (!apMode) otaUpdateBegin();
 }
 
 void webLoop() {
