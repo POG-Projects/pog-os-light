@@ -87,6 +87,11 @@ input[type=file]::file-selector-button{border:1px solid var(--line);background:r
 .zone-foot{display:flex;align-items:center;gap:9px;margin-top:12px;color:var(--muted);font-size:11px}.zone-foot input{width:17px;height:17px;accent-color:var(--emerald)}.zone-foot .range-value{margin-left:auto;font:10px var(--mono);color:var(--text)}
 .empty-zones{padding:18px;text-align:center;border:1px dashed rgba(255,255,255,.12);border-radius:18px;color:var(--soft);font-size:11px;line-height:1.5}
 .peripheral{display:grid;gap:10px;padding:15px;margin:10px 0;border:1px solid rgba(255,255,255,.08);border-radius:19px;background:rgba(5,6,10,.24)}.peripheral-head{display:flex;align-items:center;justify-content:space-between;gap:12px}.peripheral-title{font-size:13px;font-weight:600}.peripheral-copy{color:var(--soft);font-size:10px;line-height:1.45;margin-top:3px}.pin-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px}.pin-field{display:grid;gap:6px;min-width:0;color:var(--soft);font-size:10px}.pin-field select{width:100%;min-width:0}.peripheral select:disabled{opacity:.4}.peripheral-status{margin:2px 0 0}
+.update-box{position:relative;overflow:hidden;padding:16px;border:1px solid rgba(255,255,255,.09);border-radius:19px;background:linear-gradient(135deg,rgba(84,231,173,.08),rgba(168,156,255,.055))}
+.update-box:after{content:"";position:absolute;width:130px;height:130px;right:-70px;top:-75px;border-radius:50%;background:radial-gradient(circle,rgba(168,156,255,.22),transparent 70%);pointer-events:none}
+.update-top{position:relative;z-index:1;display:flex;align-items:center;gap:12px}.update-orb{width:38px;height:38px;flex:0 0 auto;display:grid;place-items:center;border-radius:13px;background:linear-gradient(145deg,rgba(84,231,173,.2),rgba(168,156,255,.16));border:1px solid rgba(255,255,255,.12);color:var(--emerald);font-size:18px}.update-title{font-size:13px;font-weight:620}.update-copy{color:var(--soft);font-size:10px;line-height:1.45;margin-top:3px}.update-version{margin-left:auto;align-self:flex-start;border:1px solid var(--line);border-radius:999px;padding:5px 8px;color:var(--muted);font:9px var(--mono);background:rgba(0,0,0,.2)}
+.update-actions{position:relative;z-index:1;display:flex;align-items:center;flex-wrap:wrap;gap:8px;margin-top:14px}.update-actions .btn{padding:9px 12px}.update-details{margin-top:15px;border-top:1px solid rgba(255,255,255,.07);padding-top:12px}.update-details summary{color:var(--soft);font-size:10px;cursor:pointer;list-style:none}.update-details summary::-webkit-details-marker{display:none}.update-details summary:after{content:" +";color:var(--emerald)}.update-details[open] summary:after{content:" −"}
+.update-modal{display:none;position:fixed;z-index:70;inset:0;align-items:center;justify-content:center;padding:20px;background:rgba(3,4,8,.76);backdrop-filter:blur(24px);-webkit-backdrop-filter:blur(24px)}.update-modal.show{display:flex;animation:obFade .28s ease-out}.update-dialog{position:relative;overflow:hidden;width:min(430px,100%);padding:30px;border:1px solid rgba(255,255,255,.17);border-radius:30px;background:linear-gradient(155deg,rgba(36,39,50,.98),rgba(12,13,20,.98));box-shadow:0 35px 100px rgba(0,0,0,.62),inset 0 1px 0 rgba(255,255,255,.1)}.update-dialog:before{content:"";position:absolute;width:250px;height:250px;right:-120px;top:-150px;border-radius:50%;background:radial-gradient(circle,rgba(168,156,255,.32),rgba(84,231,173,.1) 48%,transparent 70%)}.update-dialog .update-orb{position:relative;width:54px;height:54px;border-radius:18px;font-size:25px}.update-dialog h2{position:relative;margin:22px 0 9px;font-size:29px;line-height:1.05;letter-spacing:-.045em}.update-dialog p{position:relative;color:var(--muted);font-size:13px;line-height:1.55;margin:0}.update-dialog .ob-actions{position:relative;margin-top:25px}
 .toast{position:fixed;z-index:20;left:50%;bottom:22px;transform:translate(-50%,12px);background:rgba(239,240,244,.92);color:#16171c;padding:11px 17px;border-radius:14px;font-size:12px;font-weight:650;box-shadow:0 18px 55px rgba(0,0,0,.4);opacity:0;transition:.25s;pointer-events:none;backdrop-filter:blur(20px)}
 .toast.show{opacity:1;transform:translate(-50%,0)}
 .mobile-nav{display:none}
@@ -267,10 +272,13 @@ body.mobile-secondary .hero{display:none}
         <div class="row"><label>Mot de passe</label><input type="password" id="wifiPass" placeholder="••••••••"></div>
         <div class="action-row"><button class="btn ghost" type="button" onclick="saveWifi()">Connecter</button></div>
         <div class="divider"></div>
-        <div class="card-head"><div><h2>Mise à jour</h2><div class="kicker">Firmware local</div></div></div>
-        <div class="row"><input type="file" id="ota" accept=".bin"></div>
-        <div class="action-row"><button class="btn" type="button" onclick="doOta()">Installer</button><button class="btn ghost" type="button" onclick="reboot()">Redémarrer</button></div>
-        <div id="otaWrap" style="display:none"><div class="pbar"><div id="otaBar"></div></div><div class="hint" id="otaPct"></div></div>
+        <div class="card-head"><div><h2>Mise à jour</h2><div class="kicker">Releases officielles · GitHub</div></div></div>
+        <div class="update-box">
+          <div class="update-top"><div class="update-orb">↓</div><div><div class="update-title" id="updateTitle">Recherche d’une mise à jour…</div><div class="update-copy" id="updateCopy">PogLight vérifie automatiquement les releases officielles.</div></div><span class="update-version" id="updateVersion">v—</span></div>
+          <div class="update-actions"><button class="btn" id="updateInstall" type="button" onclick="installGithubUpdate()" style="display:none">Mettre à jour</button><button class="btn ghost" id="updateCheck" type="button" onclick="checkForUpdate()">Vérifier</button><a class="btn ghost" id="updateRelease" href="#" target="_blank" rel="noopener" style="display:none;text-decoration:none">Notes</a><button class="btn ghost" type="button" onclick="reboot()">Redémarrer</button></div>
+          <div id="otaWrap" style="display:none"><div class="pbar"><div id="otaBar"></div></div><div class="hint" id="otaPct"></div></div>
+          <details class="update-details"><summary>Installation manuelle d’un firmware .bin</summary><div class="row"><input type="file" id="ota" accept=".bin"></div><div class="action-row"><button class="btn ghost" type="button" onclick="doOta()">Installer le fichier</button></div></details>
+        </div>
       </section>
     </div>
   </main>
@@ -286,6 +294,9 @@ body.mobile-secondary .hero{display:none}
     <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4.5 9a11 11 0 0 1 15 0M7.5 12.5a6.5 6.5 0 0 1 9 0M10.5 16a2.3 2.3 0 0 1 3 0"></path><circle cx="12" cy="19" r=".7" fill="currentColor" stroke="none"></circle></svg><span>Réseau</span>
   </button>
 </nav>
+<div class="update-modal" id="updateModal" role="dialog" aria-modal="true" aria-labelledby="updateModalTitle">
+  <div class="update-dialog"><div class="update-orb">↓</div><h2 id="updateModalTitle">Une mise à jour est disponible.</h2><p id="updateModalCopy">Une nouvelle version officielle de PogLight peut être installée maintenant.</p><div class="ob-actions"><button class="btn ghost" type="button" onclick="dismissUpdate()">Plus tard</button><button class="btn" type="button" onclick="installGithubUpdate()">Installer</button></div></div>
+</div>
 <div class="toast" id="toast"></div>
 <script>
 const PATS=["Couleur pleine","Ordre couleurs","Compter (defile)","Remplissage","Arc-en-ciel","Chenillard","Respiration","Feu","Scintillement","Degrade","Balayage","Blanc plein","Eteint"];
@@ -483,6 +494,73 @@ async function saveSections(){
 async function scanWifi(){toast('Recherche des réseaux…');try{const n=await api('/api/scan');$('wifiList').innerHTML=n.sort((a,b)=>b.rssi-a.rssi).slice(0,12).map(x=>`<button class="network" onclick="$('ssid').value='${(x.ssid||'').replace(/'/g,'')}';$('wifiPass').focus()"><span>${x.ssid}</span><span>${x.rssi} dBm</span></button>`).join('');}catch(e){toast('Recherche impossible')}}
 async function saveWifi(){const s=$('ssid').value.trim();if(!s){toast('Choisissez un réseau');return}toast('Connexion et redémarrage…');try{await api('/api/wifi',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({wifiSsid:s,wifiPass:$('wifiPass').value})})}catch(e){}}
 async function reboot(){if(!confirm('Redémarrer PogLight ?'))return;try{await api('/api/reboot',{method:'POST'})}catch(e){}toast('Redémarrage en cours…')}
+let lastUpdate=null,updateCheckStarted=false;
+function dismissedUpdateVersion(){try{return localStorage.getItem('poglightUpdateLater')||''}catch(e){return ''}}
+function dismissUpdate(){if(lastUpdate?.latestVersion)try{localStorage.setItem('poglightUpdateLater',lastUpdate.latestVersion)}catch(e){}$('updateModal').classList.remove('show')}
+function renderUpdate(u,autoPrompt){
+  lastUpdate=u;
+  const busy=u.phase==='checking'||u.phase==='downloading'||u.phase==='verifying';
+  $('updateVersion').textContent='v'+(u.currentVersion||'—');
+  $('updateCheck').disabled=busy;
+  $('updateInstall').style.display=u.updateAvailable&&!busy?'inline-flex':'none';
+  $('updateRelease').style.display=u.releaseUrl?'inline-flex':'none';
+  if(u.releaseUrl)$('updateRelease').href=u.releaseUrl;
+  if(u.phase==='checking'){
+    $('updateTitle').textContent='Recherche de la dernière release…';
+    $('updateCopy').textContent='Connexion sécurisée à POG-Projects sur GitHub.';
+  }else if(u.phase==='available'){
+    $('updateTitle').textContent='PogLight '+u.latestVersion+' est disponible';
+    $('updateCopy').textContent='Version installée '+u.currentVersion+' · firmware '+u.board+' vérifié avant activation.';
+  }else if(u.phase==='downloading'){
+    $('updateTitle').textContent='Téléchargement sécurisé…';
+    $('updateCopy').textContent='Ne débranchez pas PogLight pendant l’installation.';
+  }else if(u.phase==='verifying'){
+    $('updateTitle').textContent='Vérification du firmware…';
+    $('updateCopy').textContent='Contrôle SHA‑256 avant redémarrage.';
+  }else if(u.phase==='error'){
+    $('updateTitle').textContent='Vérification impossible';
+    $('updateCopy').textContent=u.error||'La release GitHub n’est pas accessible pour le moment.';
+  }else if(u.checked){
+    $('updateTitle').textContent='PogLight est à jour';
+    $('updateCopy').textContent='Dernière release officielle : '+(u.latestVersion||u.currentVersion)+'.';
+  }else{
+    $('updateTitle').textContent='Mises à jour automatiques';
+    $('updateCopy').textContent='PogLight vérifiera les releases officielles dès que le réseau sera prêt.';
+  }
+  if(u.phase==='downloading'||u.phase==='verifying'){
+    $('otaWrap').style.display='block';
+    $('otaBar').style.width=(u.progress||0)+'%';
+    $('otaPct').textContent=u.phase==='verifying'?'Empreinte vérifiée · activation…':'Téléchargement '+(u.progress||0)+'%';
+  }else if(u.phase!=='error')$('otaWrap').style.display='none';
+  if(autoPrompt&&u.updateAvailable&&u.phase==='available'&&dismissedUpdateVersion()!==u.latestVersion){
+    $('updateModalTitle').textContent='PogLight '+u.latestVersion+' est disponible.';
+    $('updateModalCopy').textContent='La version '+u.currentVersion+' est installée. La mise à jour officielle correspondant à votre carte est prête.';
+    $('updateModal').classList.add('show');
+  }
+}
+async function pollUpdate(autoPrompt=true){
+  try{
+    const u=await api('/api/update');
+    renderUpdate(u,autoPrompt);
+    if(u.phase==='idle'&&!updateCheckStarted){updateCheckStarted=true;await api('/api/update/check',{method:'POST'})}
+  }catch(e){}
+}
+async function checkForUpdate(){
+  updateCheckStarted=true;
+  renderUpdate({...lastUpdate,phase:'checking',currentVersion:lastUpdate?.currentVersion||'—'},false);
+  try{await api('/api/update/check',{method:'POST'});setTimeout(()=>pollUpdate(false),500)}catch(e){toast('GitHub est injoignable')}
+}
+async function installGithubUpdate(){
+  if(!lastUpdate?.updateAvailable)return;
+  $('updateModal').classList.remove('show');
+  $('updateInstall').disabled=true;
+  $('otaWrap').style.display='block';$('otaPct').textContent='Préparation du téléchargement…';
+  try{
+    const r=await api('/api/update/install',{method:'POST'});
+    if(!r.ok)throw new Error(r.error||'refus');
+    toast('Mise à jour en cours…');
+  }catch(e){$('updateInstall').disabled=false;toast('Installation impossible')}
+}
 function doOta(){const f=$('ota').files[0];if(!f){toast('Choisissez un firmware .bin');return}const fd=new FormData();fd.append('f',f);const x=new XMLHttpRequest();x.open('POST','/api/ota');$('otaWrap').style.display='block';
   x.upload.onprogress=e=>{if(e.lengthComputable){const p=Math.round(e.loaded/e.total*100);$('otaBar').style.width=p+'%';$('otaPct').textContent='Envoi '+p+'%'}};
   x.onload=()=>{let r={};try{r=JSON.parse(x.responseText)}catch(e){}if(r.ok){$('otaPct').textContent='Installé · redémarrage…';setTimeout(()=>location.reload(),8000)}else toast('La mise à jour a échoué')};
@@ -501,6 +579,8 @@ function netInfo(s){
 }
 async function load(){st=await api('/api/state');if(st.board=='esp32c3'){PINS=[2,3,4,5,6,7,10];GPIO_OPTIONS=[0,1,2,3,4,5,6,7,8,9,10,20,21];TOUCH_PINS=[]}else if(st.board=='esp32'){PINS=[2,4,5,12,13,14,16,17,18,19,21,22,23];GPIO_OPTIONS=[2,4,5,12,13,14,15,16,17,18,19,21,22,23,25,26,27,32,33];TOUCH_PINS=[4,2,15,13,12,14,27,33,32]}fill(st.config);netInfo(st);const preview=new URLSearchParams(location.search).has('onboarding');if(preview||(st.apMode&&!onboardingDone()))showOnboarding(st.config)}
 load();
+pollUpdate(true);
 setInterval(pollPreview,500);
+setInterval(()=>pollUpdate(true),2500);
 setInterval(async()=>{try{netInfo(await api('/api/state'))}catch(e){}},5000);
 </script></body></html>)HTML";
