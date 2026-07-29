@@ -467,13 +467,13 @@ function renderSections(){
       <label class="zone-field">Première LED<input type="number" min="1" max="${+$('numLeds').value}" value="${s.start+1}" onchange="setSection(${s.id},'start',Math.max(0,+this.value-1))"></label>
       <label class="zone-field">Dernière LED<input type="number" min="1" max="${+$('numLeds').value}" value="${s.start+s.count}" onchange="setSection(${s.id},'count',Math.max(1,+this.value-${s.start}))"></label>
       <label class="zone-field wide">Utilité<select onchange="setSection(${s.id},'purpose',+this.value)">${PURPOSES.map((n,i)=>`<option value="${i}"${i===s.purpose?' selected':''}>${n}</option>`).join('')}</select></label>
-      <label class="zone-field">Effet<select onchange="setSection(${s.id},'pattern',+this.value)">${PATS.map((n,i)=>`<option value="${i}"${i===s.pattern?' selected':''}>${n}</option>`).join('')}</select></label>
-      <label class="zone-field">Couleur<input class="zone-color" type="color" value="${rgbHex(s.primaryColor)}" onchange="setSection(${s.id},'primaryColor',rgbInt(this.value));renderSections()"></label>
-      <label class="zone-field">Couleur secondaire<input class="zone-color" type="color" value="${rgbHex(s.secondaryColor)}" onchange="setSection(${s.id},'secondaryColor',rgbInt(this.value))"></label>
-      <label class="zone-field">Vitesse<input type="range" min="0" max="100" value="${s.speed}" oninput="setSection(${s.id},'speed',+this.value)"></label>
-      <label class="zone-field">Luminosité<input type="range" min="0" max="255" value="${s.brightness}" oninput="setSection(${s.id},'brightness',+this.value);this.closest('.zone').querySelector('.range-value').textContent=Math.round(this.value/255*100)+'%'"></label>
+      <label class="zone-field">Effet<select onchange="setSection(${s.id},'pattern',+this.value);saveSections(true)">${PATS.map((n,i)=>`<option value="${i}"${i===s.pattern?' selected':''}>${n}</option>`).join('')}</select></label>
+      <label class="zone-field">Couleur<input class="zone-color" type="color" value="${rgbHex(s.primaryColor)}" onchange="setSection(${s.id},'primaryColor',rgbInt(this.value));renderSections();saveSections(true)"></label>
+      <label class="zone-field">Couleur secondaire<input class="zone-color" type="color" value="${rgbHex(s.secondaryColor)}" onchange="setSection(${s.id},'secondaryColor',rgbInt(this.value));saveSections(true)"></label>
+      <label class="zone-field"><span>Vitesse · <b class="speed-value">${s.speed}%</b></span><input type="range" min="0" max="100" value="${s.speed}" oninput="setSection(${s.id},'speed',+this.value);this.previousElementSibling.querySelector('.speed-value').textContent=this.value+'%'" onchange="saveSections(true)"></label>
+      <label class="zone-field">Luminosité<input type="range" min="0" max="255" value="${s.brightness}" oninput="setSection(${s.id},'brightness',+this.value);this.closest('.zone').querySelector('.range-value').textContent=Math.round(this.value/255*100)+'%'" onchange="saveSections(true)"></label>
     </div>
-    <div class="zone-foot"><label><input type="checkbox"${s.enabled?' checked':''} onchange="setSection(${s.id},'enabled',this.checked)"> Active</label><label><input type="checkbox"${s.on?' checked':''} onchange="setSection(${s.id},'on',this.checked)"> Allumée</label><span class="range-value">${Math.round(s.brightness/255*100)}%</span></div>
+    <div class="zone-foot"><label><input type="checkbox"${s.enabled?' checked':''} onchange="setSection(${s.id},'enabled',this.checked);saveSections(true)"> Active</label><label><input type="checkbox"${s.on?' checked':''} onchange="setSection(${s.id},'on',this.checked);saveSections(true)"> Allumée</label><span class="range-value">${Math.round(s.brightness/255*100)}%</span></div>
   </article>`).join('');
 }
 function addSection(){
@@ -485,11 +485,11 @@ function addSection(){
   renderSections();
 }
 function removeSection(id){sections=sections.filter(x=>x.id!==id);renderSections()}
-async function saveSections(){
+async function saveSections(silent=false){
   const total=Math.max(1,+$('numLeds').value||60);
   sections.forEach(s=>{s.start=Math.min(total-1,Math.max(0,s.start));s.count=Math.min(total-s.start,Math.max(1,s.count));s.name=(s.name||'Section').trim().slice(0,32)});
   const r=await api('/api/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({purpose:+$('purpose').value,nextSectionId,sections})});
-  if(r.ok){renderSections();toast('Sections publiées dans PogHome')}else toast('Enregistrement impossible');
+  if(r.ok){renderSections();if(!silent)toast('Sections publiées dans PogHome')}else toast('Enregistrement impossible');
 }
 async function scanWifi(){toast('Recherche des réseaux…');try{const n=await api('/api/scan');$('wifiList').innerHTML=n.sort((a,b)=>b.rssi-a.rssi).slice(0,12).map(x=>`<button class="network" onclick="$('ssid').value='${(x.ssid||'').replace(/'/g,'')}';$('wifiPass').focus()"><span>${x.ssid}</span><span>${x.rssi} dBm</span></button>`).join('');}catch(e){toast('Recherche impossible')}}
 async function saveWifi(){const s=$('ssid').value.trim();if(!s){toast('Choisissez un réseau');return}toast('Connexion et redémarrage…');try{await api('/api/wifi',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({wifiSsid:s,wifiPass:$('wifiPass').value})})}catch(e){}}
