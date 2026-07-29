@@ -1,9 +1,16 @@
 Import("env")
 
+import os
+import re
 from pathlib import Path
 
 project_dir = Path(env["PROJECT_DIR"])
-version = (project_dir / "version.txt").read_text().strip()
+version = os.environ.get("POGLIGHT_BUILD_VERSION")
+if version is None:
+    version = (project_dir / "version.txt").read_text().strip()
+if not re.fullmatch(r"\d+\.\d+\.\d+", version):
+    raise ValueError(f"Invalid PogLight firmware version: {version!r}")
+print(f"PogLight firmware version: {version}")
 env.Append(CPPDEFINES=[("POGLIGHT_FW_VERSION", env.StringifyMacro(version))])
 
 # Genere l'asset C dans le repertoire de build : l'icone reste un PNG normal
