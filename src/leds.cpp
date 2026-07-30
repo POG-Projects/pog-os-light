@@ -102,34 +102,52 @@ static void pWalk(uint16_t start, uint16_t count, uint32_t now, uint16_t stepMs,
   }
 }
 
-static void pRainbow(uint16_t start, uint16_t count, uint32_t now) {
-  fill_rainbow(work + start, count, (uint8_t)(now / 20), max(1, 255 / count));
+static uint16_t speedInterval(uint8_t speed, uint16_t slowMs, uint16_t fastMs) {
+  return (uint16_t)map(speed, 0, 100, slowMs, fastMs);
 }
 
-static void pChase(uint16_t start, uint16_t count, uint32_t now, const CRGB& c) {
+static uint8_t breatheLevel(uint32_t now, uint16_t cycleMs) {
+  uint8_t phase = (uint8_t)(((uint64_t)now * 256ULL) / max((uint16_t)1, cycleMs));
+  return qadd8(10, scale8(sin8(phase), 245));
+}
+
+static void pRainbow(uint16_t start, uint16_t count, uint32_t now, uint16_t stepMs) {
+  fill_rainbow(work + start, count,
+               (uint8_t)(now / max((uint16_t)1, stepMs)),
+               max(1, 255 / count));
+}
+
+static void pChase(uint16_t start, uint16_t count, uint32_t now,
+                   uint16_t stepMs, const CRGB& c) {
   fill_solid(work + start, count, CRGB::Black);
-  uint8_t step = (now / 90) % 3;
+  uint8_t step = (now / max((uint16_t)1, stepMs)) % 3;
   for (int i = 0; i < count; i++) if ((i % 3) == step) work[start + i] = c;
 }
 
-static void pBreathe(uint16_t start, uint16_t count, const CRGB& c) {
-  uint8_t b = beatsin8(15, 10, 255);
+static void pBreathe(uint16_t start, uint16_t count, uint32_t now,
+                     uint16_t cycleMs, const CRGB& c) {
+  uint8_t b = breatheLevel(now, cycleMs);
   CRGB x = c; x.nscale8_video(b);
   fill_solid(work + start, count, x);
 }
 
-static void pFire(uint16_t start, uint16_t count) {
+static void pFire(uint16_t start, uint16_t count, uint32_t now, uint16_t stepMs) {
   static byte heat[MAX_LEDS];
-  for (int i = 0; i < count; i++) {
-    int at = start + i;
-    heat[at] = qsub8(heat[at], random8(0, ((55 * 10) / count) + 2));
-  }
-  for (int k = count - 1; k >= 2; k--) {
-    heat[start + k] = (heat[start + k - 1] + heat[start + k - 2] + heat[start + k - 2]) / 3;
-  }
-  if (random8() < 120) {
-    int y = start + random8(min(7, (int)count));
-    heat[y] = qadd8(heat[y], random8(160, 255));
+  static uint32_t lastTick[MAX_LEDS];
+  uint32_t tick = now / max((uint16_t)1, stepMs);
+  if (lastTick[start] != tick) {
+    lastTick[start] = tick;
+    for (int i = 0; i < count; i++) {
+      int at = start + i;
+      heat[at] = qsub8(heat[at], random8(0, ((55 * 10) / count) + 2));
+    }
+    for (int k = count - 1; k >= 2; k--) {
+      heat[start + k] = (heat[start + k - 1] + heat[start + k - 2] + heat[start + k - 2]) / 3;
+    }
+    if (random8() < 120) {
+      int y = start + random8(min(7, (int)count));
+      heat[y] = qadd8(heat[y], random8(160, 255));
+    }
   }
   for (int i = 0; i < count; i++) work[start + i] = HeatColor(heat[start + i]);
 }
@@ -138,9 +156,17 @@ static CRGB fromRgb(uint32_t rgb) {
   return CRGB((rgb >> 16) & 0xFF, (rgb >> 8) & 0xFF, rgb & 0xFF);
 }
 
-static void pTwinkle(uint16_t start, uint16_t count, const CRGB& color) {
-  fadeToBlackBy(work + start, count, 28);
-  if (random8() < 150) work[start + random16(count)] += color;
+static void pTwinkle(uint16_t start, uint16_t count, uint32_t now,
+                     uint16_t stepMs, const CRGB& color) {
+  static CRGB stars[MAX_LEDS];
+  static uint32_t lastTick[MAX_LEDS];
+  uint32_t tick = now / max((uint16_t)1, stepMs);
+  if (lastTick[start] != tick) {
+    lastTick[start] = tick;
+    fadeToBlackBy(stars + start, count, 28);
+    if (random8() < 150) stars[start + random16(count)] += color;
+  }
+  for (uint16_t i = 0; i < count; ++i) work[start + i] = stars[start + i];
 }
 
 static void pGradient(uint16_t start, uint16_t count, const CRGB& a, const CRGB& b) {
@@ -160,20 +186,21 @@ static void renderPattern(uint16_t start, uint16_t count, uint8_t pattern,
                           uint8_t speed, uint32_t primaryRgb,
                           uint32_t secondaryRgb, uint32_t now) {
   if (!count) return;
-  uint16_t stepMs = map(speed, 0, 100, 300, 10);
+  uint16_t stepMs = speedInterval(speed, 360, 12);
   CRGB primary = fromRgb(primaryRgb);
   CRGB secondary = fromRgb(secondaryRgb);
   static const CRGB ORDER_COLORS[3] = { CRGB::Red, CRGB::Green, CRGB::Blue };
   switch (pattern) {
     case TP_SOLID:   pSolid(start, count, primary); break;
-    case TP_ORDER:   pSolid(start, count, ORDER_COLORS[(now / 1500) % 3]); break;
+    case TP_ORDER:   pSolid(start, count, ORDER_COLORS[
+                          (now / speedInterval(speed, 2400, 250)) % 3]); break;
     case TP_WALK:    pWalk(start, count, now, stepMs, false); break;
     case TP_FILL:    pWalk(start, count, now, stepMs, true); break;
-    case TP_RAINBOW: pRainbow(start, count, now); break;
-    case TP_CHASE:   pChase(start, count, now, primary); break;
-    case TP_BREATHE: pBreathe(start, count, primary); break;
-    case TP_FIRE:    pFire(start, count); break;
-    case TP_TWINKLE: pTwinkle(start, count, primary); break;
+    case TP_RAINBOW: pRainbow(start, count, now, speedInterval(speed, 90, 3)); break;
+    case TP_CHASE:   pChase(start, count, now, speedInterval(speed, 650, 35), primary); break;
+    case TP_BREATHE: pBreathe(start, count, now, speedInterval(speed, 8000, 700), primary); break;
+    case TP_FIRE:    pFire(start, count, now, speedInterval(speed, 180, 16)); break;
+    case TP_TWINKLE: pTwinkle(start, count, now, speedInterval(speed, 220, 18), primary); break;
     case TP_GRADIENT:pGradient(start, count, primary, secondary); break;
     case TP_WIPE:    pWipe(start, count, now, stepMs, primary, secondary); break;
     case TP_WHITE:   pSolid(start, count, CRGB::White); break;
@@ -195,9 +222,15 @@ void ledsLoop() {
     uint8_t duty = 0;
     switch (snapshot.pattern) {
       case TP_OFF:     duty = 0; break;
-      case TP_BREATHE: duty = scale8(beatsin8(15, 10, 255), snapshot.brightness); break;
+      case TP_BREATHE:
+        duty = scale8(breatheLevel(now, speedInterval(snapshot.speed, 8000, 700)),
+                      snapshot.brightness);
+        break;
       case TP_CHASE:
-      case TP_WALK:    duty = ((now / 400) % 2) ? snapshot.brightness : 0; break;
+      case TP_WALK:
+        duty = ((now / speedInterval(snapshot.speed, 900, 60)) % 2)
+                   ? snapshot.brightness : 0;
+        break;
       default:         duty = snapshot.brightness; break;
     }
     ledcWrite(snapshot.ledPin, duty);
