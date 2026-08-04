@@ -18,7 +18,8 @@ volatile bool g_oledSwapped = false;
 static const char* PAT_NAMES[TP_COUNT] = {
   "Couleur pleine", "Ordre couleurs", "Compter (defile)", "Remplissage",
   "Arc-en-ciel", "Chenillard", "Respiration", "Feu", "Scintillement",
-  "Degrade", "Balayage", "Blanc plein", "Eteint"
+  "Degrade", "Balayage", "Blanc plein", "Eteint", "Aurore", "Ocean",
+  "Lave", "Comete", "Vagues", "Bougie"
 };
 static const char* ORDER_NAMES[ORDER_COUNT] = { "RGB","RBG","GRB","GBR","BRG","BGR" };
 static const uint32_t QUICK_COLORS[] = {
