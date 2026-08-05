@@ -2,6 +2,7 @@
 #include <WiFi.h>
 #include <esp_wifi.h>
 #include <ESPmDNS.h>
+#include <time.h>
 #include "config.h"
 #include "leds.h"
 #include "display.h"
@@ -65,6 +66,8 @@ void loop() {
   static bool mdns = false;
   if (!mdns && WiFi.status() == WL_CONNECTED) {
     mdns = true;
+    // L'heure UTC sert aussi de phase d'animation commune entre les lampes.
+    configTime(0, 0, "pool.ntp.org", "time.cloudflare.com", "time.google.com");
     if (MDNS.begin(MDNS_NAME)) MDNS.addService("http", "tcp", 80);
     pogdevBegin();
     Serial.printf("[WiFi] OK IP: %s -> http://%s.local\n", WiFi.localIP().toString().c_str(), MDNS_NAME);

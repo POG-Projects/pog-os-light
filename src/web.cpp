@@ -10,6 +10,7 @@
 #include "web_ui.h"
 #include "poglight_icon.h"
 #include "web.h"
+#include "web_auth.h"
 #include "pogdev.h"
 #include "ota_update.h"
 
@@ -18,6 +19,124 @@ static DNSServer dns;
 static bool      s_apMode = false;
 static const byte DNS_PORT = 53;
 static const IPAddress AP_IP(192, 168, 4, 1);
+static bool otaUploadAuthorized = false;
+static uint8_t loginFailures = 0;
+static uint32_t loginLockoutUntil = 0;
+
+static bool requestAuthorized() {
+  return webAuthHasPassword() &&
+         webAuthTokenValid(server.header("X-Auth-Token"));
+}
+
+static bool requireAuth() {
+  if (requestAuthorized()) return true;
+  server.sendHeader("Cache-Control", "no-store");
+  server.send(401, "application/json", "{\"error\":\"unauthorized\"}");
+  return false;
+}
+
+static void handleAuthStatus() {
+  JsonDocument doc;
+  doc["hasPassword"] = webAuthHasPassword();
+  doc["authed"] = requestAuthorized();
+  String out;
+  serializeJson(doc, out);
+  server.sendHeader("Cache-Control", "no-store");
+  server.send(200, "application/json", out);
+}
+
+static void handleAuthSetup() {
+  if (webAuthHasPassword()) {
+    server.send(403, "application/json",
+                "{\"success\":false,\"error\":\"already_set\"}");
+    return;
+  }
+  if (!server.hasArg("plain") || server.arg("plain").length() > 256) {
+    server.send(400, "application/json", "{\"error\":\"invalid request\"}");
+    return;
+  }
+  JsonDocument request;
+  if (deserializeJson(request, server.arg("plain")) ||
+      !webAuthSetPassword(request["password"].as<String>())) {
+    server.send(400, "application/json",
+                "{\"error\":\"password must contain 8 to 128 characters\"}");
+    return;
+  }
+  JsonDocument response;
+  response["success"] = true;
+  response["token"] = webAuthIssueToken();
+  String out;
+  serializeJson(response, out);
+  server.send(200, "application/json", out);
+}
+
+static void handleAuthLogin() {
+  uint32_t now = millis();
+  if (!webAuthHasPassword()) {
+    server.send(400, "application/json", "{\"error\":\"no_password\"}");
+    return;
+  }
+  if (loginLockoutUntil && (int32_t)(now - loginLockoutUntil) < 0) {
+    server.sendHeader("Retry-After", "30");
+    server.send(429, "application/json", "{\"error\":\"locked_out\"}");
+    return;
+  }
+  if (!server.hasArg("plain") || server.arg("plain").length() > 256) {
+    server.send(400, "application/json", "{\"error\":\"invalid request\"}");
+    return;
+  }
+  JsonDocument request;
+  if (deserializeJson(request, server.arg("plain")) ||
+      !webAuthCheckPassword(request["password"].as<String>())) {
+    delay(300);
+    if (++loginFailures >= 5) {
+      loginFailures = 0;
+      loginLockoutUntil = millis() + 30000;
+    }
+    server.send(401, "application/json", "{\"success\":false}");
+    return;
+  }
+  loginFailures = 0;
+  loginLockoutUntil = 0;
+  JsonDocument response;
+  response["success"] = true;
+  response["token"] = webAuthIssueToken();
+  String out;
+  serializeJson(response, out);
+  server.send(200, "application/json", out);
+}
+
+static void handleAuthPassword() {
+  if (!requireAuth()) return;
+  if (!server.hasArg("plain") || server.arg("plain").length() > 384) {
+    server.send(400, "application/json", "{\"error\":\"invalid request\"}");
+    return;
+  }
+  JsonDocument request;
+  if (deserializeJson(request, server.arg("plain")) ||
+      !webAuthCheckPassword(request["current_password"].as<String>())) {
+    delay(300);
+    server.send(403, "application/json", "{\"error\":\"current password refused\"}");
+    return;
+  }
+  if (!webAuthSetPassword(request["new_password"].as<String>())) {
+    server.send(400, "application/json", "{\"error\":\"invalid new password\"}");
+    return;
+  }
+  webAuthInvalidateTokens();
+  JsonDocument response;
+  response["success"] = true;
+  response["token"] = webAuthIssueToken();
+  String out;
+  serializeJson(response, out);
+  server.send(200, "application/json", out);
+}
+
+static void handleAuthLogout() {
+  if (!requireAuth()) return;
+  webAuthRevokeToken(server.header("X-Auth-Token"));
+  server.send(200, "application/json", "{\"success\":true}");
+}
 
 static void handleRoot() {
   server.sendHeader("Cache-Control", "no-store");
@@ -40,6 +159,7 @@ static void handleManifest() {
 }
 
 static void handleState() {
+  if (!requireAuth()) return;
   JsonDocument doc;
 #if CONFIG_IDF_TARGET_ESP32C3
   doc["board"]  = "esp32c3";
@@ -63,6 +183,7 @@ static void handleState() {
 }
 
 static void handleSaveConfig() {
+  if (!requireAuth()) return;
   if (!server.hasArg("plain")) { server.send(400, "application/json", "{\"ok\":false}"); return; }
   JsonDocument doc;
   if (deserializeJson(doc, server.arg("plain"))) { server.send(400, "application/json", "{\"ok\":false}"); return; }
@@ -89,6 +210,7 @@ static void handleSaveConfig() {
 }
 
 static void handleWifi() {
+  if (!requireAuth()) return;
   if (!server.hasArg("plain")) { server.send(400, "application/json", "{\"ok\":false}"); return; }
   JsonDocument doc;
   if (deserializeJson(doc, server.arg("plain"))) { server.send(400, "application/json", "{\"ok\":false}"); return; }
@@ -104,6 +226,7 @@ static void handleWifi() {
 // Premier démarrage : matériel + Wi-Fi sont enregistrés ensemble pour éviter
 // deux redémarrages au milieu de l'onboarding mobile.
 static void handleSetup() {
+  if (!requireAuth()) return;
   if (!server.hasArg("plain")) { server.send(400, "application/json", "{\"ok\":false,\"error\":\"body requis\"}"); return; }
   JsonDocument doc;
   if (deserializeJson(doc, server.arg("plain"))) { server.send(400, "application/json", "{\"ok\":false,\"error\":\"json invalide\"}"); return; }
@@ -123,6 +246,7 @@ static void handleSetup() {
 }
 
 static void handleScan() {
+  if (!requireAuth()) return;
   int n = WiFi.scanNetworks();
   JsonDocument doc; JsonArray arr = doc.to<JsonArray>();
   for (int i = 0; i < n; i++) {
@@ -135,13 +259,20 @@ static void handleScan() {
 }
 
 static void handleLeds() {
+  if (!requireAuth()) return;
   server.sendHeader("Cache-Control", "no-store");
   server.send(200, "text/plain", ledsSnapshot());
 }
 
-static void handleReboot() { server.send(200, "application/json", "{\"ok\":true}"); delay(300); ESP.restart(); }
+static void handleReboot() {
+  if (!requireAuth()) return;
+  server.send(200, "application/json", "{\"ok\":true}");
+  delay(300);
+  ESP.restart();
+}
 
 static void handleUpdateStatus() {
+  if (!requireAuth()) return;
   JsonDocument doc;
   otaUpdateFillJson(doc.to<JsonObject>());
   String out;
@@ -151,6 +282,7 @@ static void handleUpdateStatus() {
 }
 
 static void handleUpdateCheck() {
+  if (!requireAuth()) return;
   if (WiFi.status() != WL_CONNECTED) {
     server.send(503, "application/json",
                 "{\"ok\":false,\"error\":\"wifi indisponible\"}");
@@ -161,6 +293,7 @@ static void handleUpdateCheck() {
 }
 
 static void handleUpdateInstall() {
+  if (!requireAuth()) return;
   if (!otaUpdateRequestInstall()) {
     server.send(409, "application/json",
                 "{\"ok\":false,\"error\":\"aucune mise a jour disponible\"}");
@@ -170,6 +303,11 @@ static void handleUpdateInstall() {
 }
 
 static void handleOtaDone() {
+  if (!otaUploadAuthorized) {
+    server.send(401, "application/json", "{\"error\":\"unauthorized\"}");
+    return;
+  }
+  otaUploadAuthorized = false;
   bool ok = !Update.hasError();
   server.sendHeader("Connection", "close");
   server.send(200, "application/json", ok ? "{\"ok\":true}" : "{\"ok\":false,\"error\":\"echec maj\"}");
@@ -177,7 +315,12 @@ static void handleOtaDone() {
 }
 static void handleOtaUpload() {
   HTTPUpload& up = server.upload();
-  if (up.status == UPLOAD_FILE_START)      Update.begin(UPDATE_SIZE_UNKNOWN);
+  if (up.status == UPLOAD_FILE_START) {
+    otaUploadAuthorized = requestAuthorized();
+    if (!otaUploadAuthorized) return;
+    Update.begin(UPDATE_SIZE_UNKNOWN);
+  }
+  else if (!otaUploadAuthorized) return;
   else if (up.status == UPLOAD_FILE_WRITE) Update.write(up.buf, up.currentSize);
   else if (up.status == UPLOAD_FILE_END)   Update.end(true);
   else if (up.status == UPLOAD_FILE_ABORTED) Update.abort();
@@ -190,10 +333,18 @@ static void handleNotFound() {
 
 void webBegin(bool apMode) {
   s_apMode = apMode;
+  webAuthBegin();
+  const char *headers[] = {"X-Auth-Token"};
+  server.collectHeaders(headers, 1);
   if (apMode) dns.start(DNS_PORT, "*", AP_IP);
   server.on("/",            HTTP_GET,  handleRoot);
   server.on("/icon.png",    HTTP_GET,  handleIcon);
   server.on("/manifest.webmanifest", HTTP_GET, handleManifest);
+  server.on("/api/auth/status", HTTP_GET, handleAuthStatus);
+  server.on("/api/auth/setup", HTTP_POST, handleAuthSetup);
+  server.on("/api/auth/login", HTTP_POST, handleAuthLogin);
+  server.on("/api/auth/password", HTTP_POST, handleAuthPassword);
+  server.on("/api/auth/logout", HTTP_POST, handleAuthLogout);
   server.on("/api/state",   HTTP_GET,  handleState);
   server.on("/api/leds",    HTTP_GET,  handleLeds);
   server.on("/api/scan",    HTTP_GET,  handleScan);

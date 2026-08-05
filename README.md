@@ -120,6 +120,38 @@ pio device monitor -b 115200
 
 The controller continues rendering LED effects when Wi-Fi is unavailable.
 
+## Dashboard security
+
+The local dashboard requires an administrator password at first opening. Only
+its SHA-256 digest is stored in NVS. Successful authentication creates a random
+128-bit in-memory session token valid for 24 hours; tokens are invalidated on
+restart and after a password change. Secret comparisons use constant-time
+checks, and five failed logins lock authentication for 30 seconds.
+
+Configuration, Wi-Fi scanning, live LED state, OTA installation, updates and
+reboot endpoints all require the `X-Auth-Token` session header. Before the
+administrator password is created, only the dashboard assets and authentication
+setup routes are available. The password can be changed—or the current session
+locked immediately—from the Network panel.
+
+## Effects and room synchronization
+
+PogLight includes solid color, rainbow, chase, breathing, fire, twinkle,
+gradient, wipe, and diagnostic patterns, plus six atmospheric effects:
+**Aurora**, **Ocean**, **Lava**, **Comet**, **Waves**, and **Candle**.
+
+Animated effects use a shared UTC animation clock after network time becomes
+available. Two controllers using the same effect, speed, and colors therefore
+render the same animation phase instead of slowly drifting apart.
+
+PogLight also declares a parameterized room-synchronization command to PogHome.
+When at least two compatible online lamps are assigned to a room, PogHome shows
+an **Ambiance synchronisée** control on that room. It applies the effect,
+primary and secondary colors, speed, and brightness to every compatible lamp in
+the room and its sub-areas. Each lamp is still addressed through PogHome's
+normal command executor, so area scopes, availability checks, and permissions
+continue to apply.
+
 ## Sections and purposes
 
 An addressable strip can be divided into up to eight independent sections from
@@ -173,6 +205,8 @@ needs to be entered:
 PogHome exposes the controller settings as native controls:
 
 - Main scene: power, brightness, colors, effect, speed, and purpose
+- Room ambiance: synchronized effect, colors, speed, and brightness across
+  compatible lamps in a room
 - Strip: GPIO, LED count, current limit, color order, direction, and
   addressable/PWM mode
 - OLED and local controls: enable state, input mode, I²C address, and GPIO

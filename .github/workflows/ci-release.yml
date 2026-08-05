@@ -19,6 +19,16 @@ permissions:
   contents: read
 
 jobs:
+  web-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - name: Validate embedded dashboard JavaScript
+        run: |
+          awk '/<script>/{flag=1;next}/<\/script>/{flag=0}flag' \
+            src/web_ui.h > /tmp/poglight-dashboard.js
+          node --check /tmp/poglight-dashboard.js
+
   prepare:
     runs-on: ubuntu-latest
     outputs:
@@ -55,7 +65,7 @@ jobs:
           echo "bumped=$BUMPED" >> "$GITHUB_OUTPUT"
 
   build:
-    needs: prepare
+    needs: [prepare, web-tests]
     runs-on: ubuntu-latest
     env:
       POGLIGHT_BUILD_VERSION: ${{ needs.prepare.outputs.version }}

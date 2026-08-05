@@ -58,6 +58,13 @@ enum TestPattern : uint8_t {
   TP_WIPE,        // balayage progressif
   TP_WHITE,       // blanc plein (test de charge / alim)
   TP_OFF,         // eteint
+  // Ajoutes apres les valeurs historiques : les index sont persistes en NVS.
+  TP_AURORA,
+  TP_OCEAN,
+  TP_LAVA,
+  TP_COMET,
+  TP_WAVE,
+  TP_CANDLE,
   TP_COUNT
 };
 

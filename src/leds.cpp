@@ -1,4 +1,5 @@
 #include <FastLED.h>
+#include <sys/time.h>
 #include "config.h"
 #include "leds.h"
 
@@ -106,6 +107,15 @@ static uint16_t speedInterval(uint8_t speed, uint16_t slowMs, uint16_t fastMs) {
   return (uint16_t)map(speed, 0, 100, slowMs, fastMs);
 }
 
+static uint32_t animationClockMs() {
+  timeval tv{};
+  gettimeofday(&tv, nullptr);
+  if (tv.tv_sec > 1700000000) {
+    return (uint32_t)((uint64_t)tv.tv_sec * 1000ULL + tv.tv_usec / 1000ULL);
+  }
+  return millis();
+}
+
 static uint8_t breatheLevel(uint32_t now, uint16_t cycleMs) {
   uint8_t phase = (uint8_t)(((uint64_t)now * 256ULL) / max((uint16_t)1, cycleMs));
   return qadd8(10, scale8(sin8(phase), 245));
@@ -132,24 +142,12 @@ static void pBreathe(uint16_t start, uint16_t count, uint32_t now,
 }
 
 static void pFire(uint16_t start, uint16_t count, uint32_t now, uint16_t stepMs) {
-  static byte heat[MAX_LEDS];
-  static uint32_t lastTick[MAX_LEDS];
-  uint32_t tick = now / max((uint16_t)1, stepMs);
-  if (lastTick[start] != tick) {
-    lastTick[start] = tick;
-    for (int i = 0; i < count; i++) {
-      int at = start + i;
-      heat[at] = qsub8(heat[at], random8(0, ((55 * 10) / count) + 2));
-    }
-    for (int k = count - 1; k >= 2; k--) {
-      heat[start + k] = (heat[start + k - 1] + heat[start + k - 2] + heat[start + k - 2]) / 3;
-    }
-    if (random8() < 120) {
-      int y = start + random8(min(7, (int)count));
-      heat[y] = qadd8(heat[y], random8(160, 255));
-    }
+  uint16_t t = (uint16_t)(now / max((uint16_t)1, stepMs));
+  for (uint16_t i = 0; i < count; ++i) {
+    uint8_t noise = inoise8(i * 58, t * 23);
+    uint8_t cooling = (uint8_t)((i * 105UL) / max((uint16_t)1, count));
+    work[start + i] = HeatColor(qsub8(noise, cooling));
   }
-  for (int i = 0; i < count; i++) work[start + i] = HeatColor(heat[start + i]);
 }
 
 static CRGB fromRgb(uint32_t rgb) {
@@ -158,15 +156,18 @@ static CRGB fromRgb(uint32_t rgb) {
 
 static void pTwinkle(uint16_t start, uint16_t count, uint32_t now,
                      uint16_t stepMs, const CRGB& color) {
-  static CRGB stars[MAX_LEDS];
-  static uint32_t lastTick[MAX_LEDS];
-  uint32_t tick = now / max((uint16_t)1, stepMs);
-  if (lastTick[start] != tick) {
-    lastTick[start] = tick;
-    fadeToBlackBy(stars + start, count, 28);
-    if (random8() < 150) stars[start + random16(count)] += color;
+  uint32_t interval = max((uint16_t)1, stepMs) * 12UL;
+  uint32_t slot = now / interval;
+  uint8_t phase = (uint8_t)(((now % interval) * 255UL) / interval);
+  for (uint16_t i = 0; i < count; ++i) {
+    uint16_t seed = (uint16_t)(i * 2053U + slot * 1381U + start * 97U);
+    seed ^= seed << 7;
+    seed ^= seed >> 9;
+    seed ^= seed << 8;
+    uint8_t level = (seed & 0x07) == 0 ? sin8(phase) : 0;
+    work[start + i] = color;
+    work[start + i].nscale8_video(level);
   }
-  for (uint16_t i = 0; i < count; ++i) work[start + i] = stars[start + i];
 }
 
 static void pGradient(uint16_t start, uint16_t count, const CRGB& a, const CRGB& b) {
@@ -180,6 +181,57 @@ static void pWipe(uint16_t start, uint16_t count, uint32_t now, uint16_t stepMs,
                   const CRGB& a, const CRGB& b) {
   int pos = (now / max((uint16_t)1, stepMs)) % (count + 1);
   for (int i = 0; i < count; i++) work[start + i] = (i < pos) ? a : b;
+}
+
+static void pPaletteNoise(uint16_t start, uint16_t count, uint32_t now,
+                          uint16_t stepMs, const CRGBPalette16& palette,
+                          uint8_t spatialScale) {
+  uint16_t t = (uint16_t)(now / max((uint16_t)1, stepMs));
+  for (uint16_t i = 0; i < count; ++i) {
+    uint8_t n = inoise8(i * spatialScale, t * 7);
+    work[start + i] = ColorFromPalette(palette, n, 210, LINEARBLEND);
+  }
+}
+
+static void pAurora(uint16_t start, uint16_t count, uint32_t now, uint16_t stepMs) {
+  uint16_t t = (uint16_t)(now / max((uint16_t)1, stepMs));
+  for (uint16_t i = 0; i < count; ++i) {
+    uint8_t n = inoise8(i * 31, t * 5);
+    uint8_t hue = 82 + scale8(n, 78);
+    work[start + i] = CHSV(hue, 210, qadd8(55, scale8(n, 195)));
+  }
+}
+
+static void pComet(uint16_t start, uint16_t count, uint32_t now,
+                   uint16_t stepMs, const CRGB& color) {
+  fill_solid(work + start, count, CRGB::Black);
+  uint16_t span = max((uint16_t)1, (uint16_t)(count * 2 - 2));
+  uint16_t phase = (now / max((uint16_t)1, stepMs)) % span;
+  int head = phase < count ? phase : span - phase;
+  uint16_t tail = min((uint16_t)12, count);
+  for (uint16_t d = 0; d < tail; ++d) {
+    int at = head - d;
+    if (at < 0) break;
+    work[start + at] = color;
+    work[start + at].nscale8_video(255 - (d * 230 / tail));
+  }
+}
+
+static void pWave(uint16_t start, uint16_t count, uint32_t now,
+                  uint16_t stepMs, const CRGB& a, const CRGB& b) {
+  uint8_t phase = (uint8_t)(now / max((uint16_t)1, stepMs));
+  for (uint16_t i = 0; i < count; ++i) {
+    work[start + i] = blend(a, b, sin8(phase + i * 18));
+  }
+}
+
+static void pCandle(uint16_t start, uint16_t count, uint32_t now, uint16_t stepMs) {
+  uint16_t t = (uint16_t)(now / max((uint16_t)1, stepMs));
+  for (uint16_t i = 0; i < count; ++i) {
+    uint8_t flicker = inoise8(i * 71, t * 29);
+    work[start + i] = CRGB(255, 92 + scale8(flicker, 76), scale8(flicker, 22));
+    work[start + i].nscale8_video(165 + scale8(flicker, 90));
+  }
 }
 
 static void renderPattern(uint16_t start, uint16_t count, uint8_t pattern,
@@ -204,7 +256,16 @@ static void renderPattern(uint16_t start, uint16_t count, uint8_t pattern,
     case TP_GRADIENT:pGradient(start, count, primary, secondary); break;
     case TP_WIPE:    pWipe(start, count, now, stepMs, primary, secondary); break;
     case TP_WHITE:   pSolid(start, count, CRGB::White); break;
-    case TP_OFF:
+    case TP_OFF:     fill_solid(work + start, count, CRGB::Black); break;
+    case TP_AURORA:  pAurora(start, count, now, speedInterval(speed, 150, 10)); break;
+    case TP_OCEAN:   pPaletteNoise(start, count, now, speedInterval(speed, 150, 8),
+                                  OceanColors_p, 37); break;
+    case TP_LAVA:    pPaletteNoise(start, count, now, speedInterval(speed, 170, 9),
+                                  LavaColors_p, 44); break;
+    case TP_COMET:   pComet(start, count, now, speedInterval(speed, 130, 8), primary); break;
+    case TP_WAVE:    pWave(start, count, now, speedInterval(speed, 90, 3),
+                          primary, secondary); break;
+    case TP_CANDLE:  pCandle(start, count, now, speedInterval(speed, 180, 18)); break;
     default:         fill_solid(work + start, count, CRGB::Black); break;
   }
 }
@@ -215,7 +276,7 @@ void ledsLoop() {
   snapshot = g_config;
   xSemaphoreGive(g_configMutex);
 
-  uint32_t now = millis();
+  uint32_t now = animationClockMs();
 
   // --- Mode analogique (mono PWM) ---
   if (snapshot.analog) {

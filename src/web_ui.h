@@ -96,6 +96,7 @@ input[type=file]::file-selector-button{border:1px solid var(--line);background:r
 .toast.show{opacity:1;transform:translate(-50%,0)}
 .mobile-nav{display:none}
 .onboarding{display:none;position:fixed;z-index:50;inset:0;align-items:center;justify-content:center;padding:20px;background:rgba(4,5,9,.72);backdrop-filter:blur(24px) saturate(120%);-webkit-backdrop-filter:blur(24px) saturate(120%)}
+.auth-gate{position:fixed;z-index:100;inset:0;display:flex;align-items:center;justify-content:center;padding:20px;background:radial-gradient(700px 500px at 50% 10%,rgba(84,231,173,.14),transparent 65%),#07080d}.auth-gate[hidden],#app[hidden]{display:none!important}.auth-dialog{position:relative;overflow:hidden;width:min(430px,100%);padding:30px;border:1px solid rgba(255,255,255,.17);border-radius:30px;background:linear-gradient(155deg,rgba(36,39,50,.98),rgba(12,13,20,.98));box-shadow:var(--shadow)}.auth-dialog:before{content:"";position:absolute;width:250px;height:250px;right:-120px;top:-150px;border-radius:50%;background:radial-gradient(circle,rgba(168,156,255,.32),rgba(84,231,173,.1) 48%,transparent 70%)}.auth-dialog h2,.auth-dialog p,.auth-dialog input,.auth-dialog button{position:relative}.auth-dialog h2{font-size:29px;margin:18px 0 8px}.auth-dialog p{color:var(--muted);line-height:1.5}.auth-dialog input{display:block;width:100%;margin-top:10px}.auth-error{min-height:18px;margin-top:10px;color:var(--danger);font-size:11px}
 .onboarding.show{display:flex;animation:obFade .35s ease-out}
 .ob-shell{position:relative;width:min(480px,100%);min-height:650px;overflow:hidden;display:flex;flex-direction:column;border:1px solid rgba(255,255,255,.18);border-radius:34px;background:linear-gradient(155deg,rgba(37,40,51,.96),rgba(13,14,21,.97));box-shadow:0 40px 120px rgba(0,0,0,.65),inset 0 1px 0 rgba(255,255,255,.13)}
 .ob-glow{position:absolute;width:360px;height:360px;top:-210px;right:-130px;border-radius:50%;background:radial-gradient(circle,rgba(168,156,255,.35),rgba(84,231,173,.12) 45%,transparent 70%);pointer-events:none}
@@ -146,6 +147,18 @@ body.mobile-secondary .hero{display:none}
 @media(prefers-reduced-motion:reduce){*{scroll-behavior:auto!important;transition:none!important}}
 </style></head>
 <body>
+<div class="auth-gate" id="authGate">
+  <div class="auth-dialog">
+    <div class="logo"></div>
+    <h2 id="authTitle">Sécurisation…</h2>
+    <p id="authText">Vérification de l’accès à POG Light.</p>
+    <input id="adminPassword" type="password" minlength="8" maxlength="128" autocomplete="current-password" placeholder="Mot de passe administrateur">
+    <input id="adminPasswordConfirm" type="password" minlength="8" maxlength="128" autocomplete="new-password" placeholder="Confirmer le mot de passe" hidden>
+    <div class="auth-error" id="authError" role="status"></div>
+    <div class="action-row"><button class="btn" id="authSubmit" type="button">Continuer</button></div>
+  </div>
+</div>
+<div id="app" hidden>
 <div class="onboarding" id="onboarding" role="dialog" aria-modal="true" aria-label="Configuration de PogLight">
   <div class="ob-shell">
     <div class="ob-glow"></div>
@@ -272,6 +285,12 @@ body.mobile-secondary .hero{display:none}
         <div class="row"><label>Mot de passe</label><input type="password" id="wifiPass" placeholder="••••••••"></div>
         <div class="action-row"><button class="btn ghost" type="button" onclick="saveWifi()">Connecter</button></div>
         <div class="divider"></div>
+        <div class="card-head"><div><h2>Sécurité</h2><div class="kicker">Accès au dashboard</div></div></div>
+        <div class="row"><label>Mot de passe actuel</label><input type="password" id="currentAdminPassword" maxlength="128" autocomplete="current-password"></div>
+        <div class="row"><label>Nouveau mot de passe</label><input type="password" id="newAdminPassword" minlength="8" maxlength="128" autocomplete="new-password"></div>
+        <div class="row"><label>Confirmation</label><input type="password" id="confirmAdminPassword" minlength="8" maxlength="128" autocomplete="new-password"></div>
+        <div class="action-row"><button class="btn ghost" type="button" onclick="changeAdminPassword()">Changer</button><button class="btn ghost" type="button" onclick="logout()">Verrouiller</button></div>
+        <div class="divider"></div>
         <div class="card-head"><div><h2>Mise à jour</h2><div class="kicker">Releases officielles · GitHub</div></div></div>
         <div class="update-box">
           <div class="update-top"><div class="update-orb">↓</div><div><div class="update-title" id="updateTitle">Recherche d’une mise à jour…</div><div class="update-copy" id="updateCopy">PogLight vérifie automatiquement les releases officielles.</div></div><span class="update-version" id="updateVersion">v—</span></div>
@@ -298,8 +317,9 @@ body.mobile-secondary .hero{display:none}
   <div class="update-dialog"><div class="update-orb">↓</div><h2 id="updateModalTitle">Une mise à jour est disponible.</h2><p id="updateModalCopy">Une nouvelle version officielle de PogLight peut être installée maintenant.</p><div class="ob-actions"><button class="btn ghost" type="button" onclick="dismissUpdate()">Plus tard</button><button class="btn" type="button" onclick="installGithubUpdate()">Installer</button></div></div>
 </div>
 <div class="toast" id="toast"></div>
+</div>
 <script>
-const PATS=["Couleur pleine","Ordre couleurs","Compter (defile)","Remplissage","Arc-en-ciel","Chenillard","Respiration","Feu","Scintillement","Degrade","Balayage","Blanc plein","Eteint"];
+const PATS=["Couleur pleine","Ordre couleurs","Compter (defile)","Remplissage","Arc-en-ciel","Chenillard","Respiration","Feu","Scintillement","Degrade","Balayage","Blanc plein","Eteint","Aurore","Ocean","Lave","Comete","Vagues","Bougie"];
 const ORDERS=["RGB","RBG","GRB","GBR","BRG","BGR"];
 const PURPOSES=["Ambiance","Éclairage de travail","Veilleuse","Balisage","Télévision","Indicateur d’état","Réveil","Décoration"];
 let PINS=[18,16,2,15,17,21,38,47,48];
@@ -308,7 +328,15 @@ let TOUCH_PINS=[1,2,3,4,5,6,7,8,9,10,11,12,13,14];
 let st=null;
 let sections=[],nextSectionId=1;
 function $(i){return document.getElementById(i)}
-function api(p,o){return fetch(p,o).then(r=>r.json())}
+let authMode='login',appStarted=false;
+function getToken(){try{return sessionStorage.getItem('pogLightToken')||''}catch(e){return ''}}
+function setToken(token){try{if(token)sessionStorage.setItem('pogLightToken',token);else sessionStorage.removeItem('pogLightToken')}catch(e){}}
+function showAuth(setup=false){authMode=setup?'setup':'login';$('authGate').hidden=false;$('app').hidden=true;$('authTitle').textContent=setup?'Protégeons POG Light':'POG Light verrouillé';$('authText').textContent=setup?'Créez le mot de passe administrateur de cet appareil.':'Saisissez le mot de passe pour accéder au dashboard.';$('adminPassword').value='';$('adminPasswordConfirm').value='';$('adminPasswordConfirm').hidden=!setup;$('authError').textContent='';$('authSubmit').textContent=setup?'Créer le mot de passe':'Déverrouiller';setTimeout(()=>$('adminPassword').focus(),60)}
+async function bootstrapAuth(){try{const token=getToken(),headers=token?{'X-Auth-Token':token}:{},r=await fetch('/api/auth/status',{headers,cache:'no-store'}),d=await r.json();if(!d.hasPassword)return showAuth(true);if(d.authed)return enterApp();setToken('');showAuth(false)}catch(e){showAuth(false)}}
+async function submitAuth(){const password=$('adminPassword').value,confirmation=$('adminPasswordConfirm').value;if(password.length<8){$('authError').textContent='Au moins 8 caractères.';return}if(authMode==='setup'&&password!==confirmation){$('authError').textContent='Les mots de passe ne correspondent pas.';return}$('authSubmit').disabled=true;try{const endpoint=authMode==='setup'?'/api/auth/setup':'/api/auth/login',r=await fetch(endpoint,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({password})}),d=await r.json().catch(()=>({}));if(r.status===429){$('authError').textContent='Trop d’essais. Patientez 30 secondes.';return}if(!r.ok||!d.success){$('authError').textContent=authMode==='setup'?(d.error||'Création impossible.'):'Mot de passe incorrect.';return}setToken(d.token);enterApp()}catch(e){$('authError').textContent='Connexion impossible.'}finally{$('authSubmit').disabled=false}}
+async function api(p,o={}){const headers=new Headers(o.headers||{}),token=getToken();if(token)headers.set('X-Auth-Token',token);const r=await fetch(p,{...o,headers}),d=await r.json().catch(()=>({}));if(r.status===401){setToken('');showAuth(false);throw new Error('unauthorized')}if(!r.ok)throw new Error(d.error||`HTTP ${r.status}`);return d}
+async function changeAdminPassword(){const current=$('currentAdminPassword').value,next=$('newAdminPassword').value,confirmation=$('confirmAdminPassword').value;if(next.length<8)return toast('8 caractères minimum');if(next!==confirmation)return toast('Les mots de passe ne correspondent pas');try{const d=await api('/api/auth/password',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({current_password:current,new_password:next})});setToken(d.token);$('currentAdminPassword').value='';$('newAdminPassword').value='';$('confirmAdminPassword').value='';toast('Mot de passe modifié')}catch(e){toast('Mot de passe actuel refusé')}}
+async function logout(){try{await api('/api/auth/logout',{method:'POST'})}catch(e){}setToken('');showAuth(false)}
 function toast(m){const t=$('toast');t.textContent=m;t.className='toast show';setTimeout(()=>t.className='toast',1800)}
 function switchMobileView(view){
   const ids={light:'viewLight',hardware:'viewHardware',network:'viewNetwork'};
@@ -561,12 +589,12 @@ async function installGithubUpdate(){
     toast('Mise à jour en cours…');
   }catch(e){$('updateInstall').disabled=false;toast('Installation impossible')}
 }
-function doOta(){const f=$('ota').files[0];if(!f){toast('Choisissez un firmware .bin');return}const fd=new FormData();fd.append('f',f);const x=new XMLHttpRequest();x.open('POST','/api/ota');$('otaWrap').style.display='block';
+function doOta(){const f=$('ota').files[0];if(!f){toast('Choisissez un firmware .bin');return}const fd=new FormData();fd.append('f',f);const x=new XMLHttpRequest();x.open('POST','/api/ota');const token=getToken();if(token)x.setRequestHeader('X-Auth-Token',token);$('otaWrap').style.display='block';
   x.upload.onprogress=e=>{if(e.lengthComputable){const p=Math.round(e.loaded/e.total*100);$('otaBar').style.width=p+'%';$('otaPct').textContent='Envoi '+p+'%'}};
   x.onload=()=>{let r={};try{r=JSON.parse(x.responseText)}catch(e){}if(r.ok){$('otaPct').textContent='Installé · redémarrage…';setTimeout(()=>location.reload(),8000)}else toast('La mise à jour a échoué')};
   x.onerror=()=>toast('Connexion interrompue');x.send(fd)}
 
-async function pollPreview(){try{const h=await (await fetch('/api/leds')).text();const s=$('preview');const N=Math.floor(h.length/6);let o='';for(let i=0;i<N;i++){const c='#'+h.substr(i*6,6);o+= (c!='#000000')?`<i style="background:${c};box-shadow:0 0 7px ${c}"></i>`:'<i></i>'}s.innerHTML=o}catch(e){}}
+async function pollPreview(){try{const headers={'X-Auth-Token':getToken()},r=await fetch('/api/leds',{headers});if(r.status===401){setToken('');showAuth(false);return}const h=await r.text(),s=$('preview'),N=Math.floor(h.length/6);let o='';for(let i=0;i<N;i++){const c='#'+h.substr(i*6,6);o+=(c!='#000000')?`<i style="background:${c};box-shadow:0 0 7px ${c}"></i>`:'<i></i>'}s.innerHTML=o}catch(e){}}
 function netInfo(s){
   $('net').textContent=s.apMode?'AP : 192.168.4.1':(s.ip||'-');
   const o=$('oledStat');
@@ -578,9 +606,6 @@ function netInfo(s){
       : '<span style="color:var(--danger)">Écran OLED non détecté</span> · vérifiez les GPIO, VCC et GND';
 }
 async function load(){st=await api('/api/state');if(st.board=='esp32c3'){PINS=[2,3,4,5,6,7,10];GPIO_OPTIONS=[0,1,2,3,4,5,6,7,8,9,10,20,21];TOUCH_PINS=[]}else if(st.board=='esp32'){PINS=[2,4,5,12,13,14,16,17,18,19,21,22,23];GPIO_OPTIONS=[2,4,5,12,13,14,15,16,17,18,19,21,22,23,25,26,27,32,33];TOUCH_PINS=[4,2,15,13,12,14,27,33,32]}fill(st.config);netInfo(st);const preview=new URLSearchParams(location.search).has('onboarding');if(preview||(st.apMode&&!onboardingDone()))showOnboarding(st.config)}
-load();
-pollUpdate(true);
-setInterval(pollPreview,500);
-setInterval(()=>pollUpdate(true),2500);
-setInterval(async()=>{try{netInfo(await api('/api/state'))}catch(e){}},5000);
+function enterApp(){$('authGate').hidden=true;$('app').hidden=false;if(appStarted)return;appStarted=true;load();pollUpdate(true);setInterval(pollPreview,500);setInterval(()=>pollUpdate(true),2500);setInterval(async()=>{try{netInfo(await api('/api/state'))}catch(e){}},5000)}
+$('authSubmit').onclick=submitAuth;$('adminPassword').onkeydown=e=>{if(e.key==='Enter')submitAuth()};$('adminPasswordConfirm').onkeydown=e=>{if(e.key==='Enter')submitAuth()};bootstrapAuth();
 </script></body></html>)HTML";

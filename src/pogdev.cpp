@@ -51,7 +51,8 @@ uint8_t lastActivePattern = TP_RAINBOW;
 const char *kEffectNames[TP_COUNT] = {
     "Uni", "Ordre couleurs", "Pixel mobile", "Remplissage", "Arc-en-ciel",
     "Chenillard", "Respiration", "Feu", "Scintillement", "Dégradé",
-    "Balayage", "Blanc", "Éteint"};
+    "Balayage", "Blanc", "Éteint", "Aurore", "Océan", "Lave",
+    "Comète", "Vagues", "Bougie"};
 const char *kColorOrders[ORDER_COUNT] = {"RGB", "RBG", "GRB", "GBR", "BRG", "BGR"};
 
 JsonObject addEntity(JsonArray entities, const String &key, const String &name,
@@ -103,6 +104,42 @@ void addColorEntity(JsonArray entities, const String &key, const String &name,
                     const char *category) {
   JsonObject entity = addEntity(entities, key, name, category);
   entity["traits"].to<JsonArray>().add<JsonObject>()["id"] = "color";
+}
+
+void addRoomSyncEntity(JsonArray entities) {
+  JsonObject entity = addEntity(
+      entities, "room_sync", "Synchronisation de pièce", "light");
+  JsonObject trait = entity["traits"].to<JsonArray>().add<JsonObject>();
+  trait["id"] = "action";
+  JsonObject command =
+      trait["config"]["commands"].to<JsonArray>().add<JsonObject>();
+  command["name"] = "sync_effect";
+  command["label"] = "Synchroniser l’ambiance";
+  command["sensitive"] = false;
+  command["reversible"] = true;
+  JsonArray params = command["params"].to<JsonArray>();
+
+  JsonObject effect = params.add<JsonObject>();
+  effect["name"] = "effect";
+  effect["kind"] = "enum";
+  effect["required"] = true;
+  JsonArray options = effect["enum"].to<JsonArray>();
+  for (const char *name : kEffectNames) options.add(name);
+
+  auto numberParam = [&](const char *name, float min, float max) {
+    JsonObject param = params.add<JsonObject>();
+    param["name"] = name;
+    param["kind"] = "number";
+    param["required"] = true;
+    param["min"] = min;
+    param["max"] = max;
+  };
+  numberParam("speed", 0, 100);
+  numberParam("brightness", 0, 100);
+  numberParam("primary_hue", 0, 360);
+  numberParam("primary_saturation", 0, 100);
+  numberParam("secondary_hue", 0, 360);
+  numberParam("secondary_saturation", 0, 100);
 }
 
 void addPinSelect(JsonArray entities, const String &key, const String &name,
@@ -345,6 +382,7 @@ void publishHello() {
   addColorEntity(entities, "accent", "Couleur secondaire", "light");
   addSelectEntity(entities, "effect", "Effet", "light", kEffectNames, TP_COUNT);
   addNumberEntity(entities, "speed", "Vitesse", "light", 0, 100, 1, "%");
+  addRoomSyncEntity(entities);
 
   static const char *const directions[] = {"Normal", "Inversé"};
   static const char *const stripModes[] = {"Adressable · ARGB", "Analogique · PWM"};
@@ -583,7 +621,34 @@ void handleCommand(char *, byte *payload, unsigned int length) {
 
   xSemaphoreTake(g_configMutex, portMAX_DELAY);
   Config before = g_config;
-  if (key == "light") {
+  if (key == "room_sync" && name == "sync_effect") {
+    String option = params["effect"].as<String>();
+    for (uint8_t i = 0; i < TP_COUNT; ++i) {
+      if (option != kEffectNames[i]) continue;
+      g_config.pattern = i;
+      g_config.speed = constrain((int)(params["speed"] | 50), 0, 100);
+      g_config.brightness = (uint8_t)roundf(
+          constrain((float)(params["brightness"] | 100.0f), 0.0f, 100.0f) *
+          2.55f);
+      g_config.primaryColor =
+          hsToRgb(params["primary_hue"] | 0.0f,
+                  params["primary_saturation"] | 100.0f);
+      g_config.secondaryColor =
+          hsToRgb(params["secondary_hue"] | 240.0f,
+                  params["secondary_saturation"] | 100.0f);
+      if (i != TP_OFF) lastActivePattern = i;
+      for (uint8_t section = 0; section < g_config.sectionCount; ++section) {
+        LedSection &target = g_config.sections[section];
+        target.pattern = i;
+        target.speed = g_config.speed;
+        target.primaryColor = g_config.primaryColor;
+        target.secondaryColor = g_config.secondaryColor;
+        target.on = i != TP_OFF;
+      }
+      changed = true;
+      break;
+    }
+  } else if (key == "light") {
     if (name == "turn_off") {
       if (g_config.pattern != TP_OFF) lastActivePattern = g_config.pattern;
       g_config.pattern = TP_OFF;
