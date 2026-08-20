@@ -822,7 +822,13 @@ void handleCommand(char *, byte *payload, unsigned int length) {
   // trace et on republie l'état pour que l'interrupteur revienne à sa position
   // réelle au lieu de paraître accepté.
   bool reverted = false;
-  if (changed && !hardwarePinsValid(g_config)) {
+  // On n'annule que la commande qui INTRODUIT la collision. Juger la
+  // configuration entière annulait toute commande posant `changed` — allumer la
+  // lampe, changer sa couleur — dès qu'une collision était déjà persistée : la
+  // lampe devenait sourde à POG Home, en silence, pour une cause qui n'avait
+  // rien à voir avec le geste refusé. Et comme la réparation se fait au portail,
+  // rien dans POG Home n'aurait indiqué où regarder.
+  if (changed && !hardwarePinsValid(g_config) && hardwarePinsValid(before)) {
     g_config = before;
     changed = schemaChanged = requiresReboot = false;
     reverted = true;
