@@ -476,6 +476,33 @@ void publishHello() {
   helloDirty = !published;
 }
 
+// Ce que le ruban montre vraiment. leds.cpp saute toute section dont `on` ou
+// `enabled` est faux : avec un découpage, `pattern != TP_OFF` ne suffit donc pas
+// à dire que la lampe éclaire. Publier « allumé » sur un ruban noir met POG Home
+// dans un état que l'habitant ne peut plus corriger — il voit une lampe allumée
+// et n'a plus de geste à faire.
+bool lightIsOn(const Config &config) {
+  if (config.pattern == TP_OFF) return false;
+  if (!config.sectionCount) return true;
+  for (uint8_t i = 0; i < config.sectionCount; ++i) {
+    if (config.sections[i].enabled && config.sections[i].on) return true;
+  }
+  return false;
+}
+
+// Rallume les sections seulement si AUCUNE ne rendrait quoi que ce soit. Une
+// extinction section par section reste respectée tant qu'il en reste une
+// allumée ; on ne force la main que dans le cas où « allumer » ne produirait
+// rien du tout. `enabled` n'est volontairement pas touché : il se pose au
+// portail et se répare au portail, alors que `on` se pose à distance — c'est
+// celui-là qui pouvait piéger.
+void restoreRenderableSections(Config &config) {
+  for (uint8_t i = 0; i < config.sectionCount; ++i) {
+    if (config.sections[i].enabled && config.sections[i].on) return;
+  }
+  for (uint8_t i = 0; i < config.sectionCount; ++i) config.sections[i].on = true;
+}
+
 void publishState() {
   Config snapshot;
   xSemaphoreTake(g_configMutex, portMAX_DELAY);
@@ -487,7 +514,7 @@ void publishState() {
   rgbToHs(snapshot.secondaryColor, accentHue, accentSaturation);
   JsonDocument doc;
   JsonObject light = doc["light"].to<JsonObject>();
-  light["on"] = snapshot.pattern != TP_OFF;
+  light["on"] = lightIsOn(snapshot);
   light["brightness"] = roundf(snapshot.brightness * 100.0f / 255.0f);
   light["mode"] = "hs";
   light["hue"] = primaryHue;
@@ -632,10 +659,16 @@ void handleCommand(char *, byte *payload, unsigned int length) {
       changed = true;
     } else if (name == "turn_on") {
       if (g_config.pattern == TP_OFF) g_config.pattern = lastActivePattern;
+      restoreRenderableSections(g_config);
       changed = true;
     } else if (name == "toggle") {
-      if (g_config.pattern == TP_OFF) g_config.pattern = lastActivePattern;
-      else {
+      // Bascule sur ce que la lampe montre, pas sur `pattern` seul : sinon un
+      // ruban déjà noir parce que ses sections sont éteintes s'éteint « encore »
+      // au lieu de s'allumer.
+      if (!lightIsOn(g_config)) {
+        if (g_config.pattern == TP_OFF) g_config.pattern = lastActivePattern;
+        restoreRenderableSections(g_config);
+      } else {
         lastActivePattern = g_config.pattern;
         g_config.pattern = TP_OFF;
       }
