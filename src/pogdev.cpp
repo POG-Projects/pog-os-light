@@ -26,6 +26,16 @@ constexpr uint32_t kReconnectPeriodMs = 5000;
 // Palier de reprise après une publication refusée : on double jusqu’au plafond.
 constexpr uint32_t kMinBackoffMs = 500;
 constexpr uint32_t kMaxBackoffMs = 30000;
+// PubSubClient stocke sa taille de tampon dans un uint16_t. Au-delà,
+// setBufferSize tronque en silence et le message part amputé : on refuse.
+constexpr size_t kMaxMqttBuffer = 65535;
+// Budget de tampon par découpage, mesuré au banc le 20 août 2026 : 2 896 octets
+// de manifeste à une section, 5 837 à deux, 14 683 à huit — environ 1 475
+// octets par section au-delà de la première. Arrondi largement au-dessus pour
+// absorber les noms longs : le nom d'une section paraît huit fois dans le
+// manifeste, et le portail le borne à 32 caractères (web_ui.h, saveSections).
+constexpr size_t kHelloBaseBytes = 4096;
+constexpr size_t kHelloPerSectionBytes = 2048;
 
 struct Credentials {
   String deviceId;
@@ -341,11 +351,31 @@ uint32_t hsToRgb(float hue, float saturation) {
 bool ensureMqttBuffer(size_t payloadLength) {
   // en-tête fixe + longueur de sujet encodée + marge de sécurité
   size_t needed = payloadLength + 16;
+  // setBufferSize prend un uint16_t : au-delà de 65 519 octets utiles, un
+  // size_t se tronque à la conversion et le tampon obtenu est minuscule alors
+  // que l'appel renvoie true. Inatteignable avec le manifeste réduit, mais une
+  // troncature muette est le genre de panne qu'on ne diagnostique jamais.
+  if (needed > kMaxMqttBuffer) {
+    Serial.printf("[PogHome] message de %u octets au-delà du maximum MQTT "
+                  "(%u), refusé\n",
+                  (unsigned)payloadLength,
+                  (unsigned)(kMaxMqttBuffer - 16));
+    return false;
+  }
   if (mqtt.getBufferSize() >= needed) return true;
-  if (mqtt.setBufferSize(needed)) return true;
+  if (mqtt.setBufferSize((uint16_t)needed)) return true;
   Serial.printf("[PogHome] tampon MQTT trop petit: %u octets refusés\n",
                 (unsigned)needed);
   return false;
+}
+
+// Budget de charge utile à réserver pour le découpage courant. La garde
+// `> 1` est celle de publishHello : en dessous, aucune entité de section n'est
+// déclarée et le manifeste ne dépend plus du nombre de sections.
+size_t mqttPayloadBudget(uint8_t sectionCount) {
+  size_t budget = kHelloBaseBytes;
+  if (sectionCount > 1) budget += (size_t)sectionCount * kHelloPerSectionBytes;
+  return budget > kMaxMqttBuffer - 16 ? kMaxMqttBuffer - 16 : budget;
 }
 
 void publishHello() {
@@ -849,12 +879,17 @@ void handleCommand(char *, byte *payload, unsigned int length) {
 bool connectMqtt() {
   mqtt.setServer(credentials.host.c_str(), credentials.port);
   mqtt.setCallback(handleCommand);
-  // Le manifeste réduit tient largement dans 8 Kio avec une seule section.
-  // ensureMqttBuffer l’agrandit à la demande si l’habitant découpe le ruban
-  // depuis le portail — jamais à la baisse en cours de session, et jamais sans
-  // vérifier le retour. Les 24 Kio d’avant étaient calibrés sur un pire cas à
-  // huit sections que personne n’a, et étaient réservés à chaque connexion.
-  ensureMqttBuffer(8192);
+  // Dimensionné à la connexion sur le découpage RÉEL, pas sur un pire cas à huit
+  // sections que personne n'a — les 24 Kio d'avant — ni sur une constante qu'il
+  // faudrait faire grandir en cours de session. C'est le moment où le tas est
+  // le moins fragmenté : un realloc plus tard, sur une lampe qui tourne depuis
+  // des semaines, est exactement celui qui échoue, et ensureMqttBuffer ne
+  // saurait alors que constater. Il reste le filet, il n'est plus le plan.
+  uint8_t sectionCount;
+  xSemaphoreTake(g_configMutex, portMAX_DELAY);
+  sectionCount = g_config.sectionCount;
+  xSemaphoreGive(g_configMutex);
+  ensureMqttBuffer(mqttPayloadBudget(sectionCount));
   mqtt.setKeepAlive(30);
   String statusTopic = "pog/" + credentials.deviceId + "/status";
   bool ok = mqtt.connect(credentials.deviceId.c_str(), credentials.deviceId.c_str(),

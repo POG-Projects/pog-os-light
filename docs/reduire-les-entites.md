@@ -773,9 +773,13 @@ comme entité MQTT.
 s'appuie sur la reconnexion automatique d'Arduino, comme aujourd'hui au foyer.
 
 **Le tampon MQTT (§5.7).** `ensureMqttBuffer` ne redimensionne **qu'à la
-hausse**, teste le retour et le trace. Le tampon de connexion descend de 24 Kio
-à 8 Kio et s'agrandit à la demande si l'habitant découpe le ruban depuis le
-portail — le pire cas à huit sections mesure 14 683 octets.
+hausse**, teste le retour, le trace, et refuse explicitement au-delà de 65 519
+octets utiles au lieu de laisser le `size_t` se tronquer sur le `uint16_t` de
+`setBufferSize`. Le tampon est dimensionné **à la connexion sur le découpage
+réel** (`mqttPayloadBudget`) — 4 Kio à une section, 20 Kio au pire cas de huit,
+contre 24 Kio réservés à chaque connexion auparavant. Redimensionner à la
+demande en cours de session restait un pari sur l'état du tas : le realloc qui
+échoue est celui d'une lampe qui tourne depuis des semaines.
 
 **Les retours ignorés (§5.8, §5.9).** `stateDirty` reflète le retour de
 `mqtt.publish`, et `helloDirty` comme `stateDirty` sont réessayés avec un délai
