@@ -148,3 +148,9 @@ void   configFillJson(JsonObject root, bool includeWifiPass);
 void   configApplyJson(JsonObjectConst doc);
 const char* lightPurposeKey(uint8_t purpose);
 const char* lightPurposeLabel(uint8_t purpose);
+
+// Vrai si le câblage décrit par `config` est réalisable : aucune broche n'est
+// réclamée deux fois et le mode tactile n'est demandé que sur une puce qui en a.
+// Vit ici et non dans pogdev.cpp parce que ce n'est pas une règle du bus MQTT
+// mais une règle de la configuration : le portail web l'écrit tout autant.
+bool hardwarePinsValid(const Config &config);

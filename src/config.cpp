@@ -25,6 +25,34 @@ const char* lightPurposeLabel(uint8_t purpose) {
   return PURPOSE_LABELS[purpose < LP_COUNT ? purpose : LP_AMBIENT];
 }
 
+// Deux périphériques sur la même broche, c'est un ruban éteint : allumer les
+// boutons appelle pinMode(INPUT_PULLUP) sur une broche que FastLED tient par le
+// bus RMT, et arduino-esp32 détache alors ce bus sans rien dire. Sur le foyer,
+// ledPin et buttonPins[3] valent tous deux GPIO 4 : la collision n'est pas
+// théorique.
+bool hardwarePinsValid(const Config &config) {
+  if (config.oledEnabled && config.oledSda == config.oledScl) return false;
+  uint8_t used[11];
+  uint8_t count = 0;
+  used[count++] = config.ledPin;
+  if (config.oledEnabled) {
+    used[count++] = config.oledSda;
+    used[count++] = config.oledScl;
+  }
+  if (config.buttonsEnabled) {
+#if !SOC_TOUCH_SENSOR_SUPPORTED
+    if (config.buttonMode == BIM_CAPACITIVE) return false;
+#endif
+    for (uint8_t pin : config.buttonPins) used[count++] = pin;
+  }
+  for (uint8_t i = 0; i < count; ++i) {
+    for (uint8_t j = i + 1; j < count; ++j) {
+      if (used[i] == used[j]) return false;
+    }
+  }
+  return true;
+}
+
 void configBegin() {
   if (!g_configMutex) g_configMutex = xSemaphoreCreateMutex();
 }

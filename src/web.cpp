@@ -190,6 +190,21 @@ static void handleSaveConfig() {
   xSemaphoreTake(g_configMutex, portMAX_DELAY);
   Config before = g_config;
   configApplyJson(doc.as<JsonObjectConst>());
+  // Le portail est le seul chemin qui écrit encore les broches : les entités
+  // led_pin, button_pin_*, oled_sda et oled_scl ont disparu du manifeste, et
+  // avec elles la seule garde qui existait. Sans ce test, cocher « Boutons »
+  // pendant que buttonPins[3] vaut la broche du ruban éteint le ruban au
+  // redémarrage suivant, sans erreur et sans trace.
+  // On refuse la modification qui INTRODUIT la collision, pas la configuration
+  // déjà en collision : le portail doit rester l'endroit où on la répare.
+  if (!hardwarePinsValid(g_config) && hardwarePinsValid(before)) {
+    g_config = before;
+    xSemaphoreGive(g_configMutex);
+    server.send(409, "application/json",
+                "{\"ok\":false,\"error\":\"GPIO déjà utilisé · deux fonctions "
+                "sur la même broche\"}");
+    return;
+  }
   bool hw = g_config.ledPin != before.ledPin ||
             g_config.numLeds != before.numLeds ||
             g_config.analog != before.analog ||
@@ -235,7 +250,19 @@ static void handleSetup() {
     return;
   }
   xSemaphoreTake(g_configMutex, portMAX_DELAY);
+  Config before = g_config;
   configApplyJson(doc.as<JsonObjectConst>());
+  // Même garde qu'au-dessus, avant que quoi que ce soit ne soit persisté : ce
+  // chemin-ci enchaîne sur un redémarrage, donc une collision acceptée ici
+  // rallume la lampe avec la broche du ruban déjà confisquée.
+  if (!hardwarePinsValid(g_config) && hardwarePinsValid(before)) {
+    g_config = before;
+    xSemaphoreGive(g_configMutex);
+    server.send(409, "application/json",
+                "{\"ok\":false,\"error\":\"GPIO déjà utilisé · deux fonctions "
+                "sur la même broche\"}");
+    return;
+  }
   g_config.wifiSsid = doc["wifiSsid"].as<String>();
   if (doc["wifiPass"].is<const char*>()) g_config.wifiPass = doc["wifiPass"].as<String>();
   configSave();

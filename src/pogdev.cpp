@@ -566,29 +566,6 @@ bool setSwitchCommand(const String &name, bool &value) {
   return true;
 }
 
-bool hardwarePinsValid(const Config &config) {
-  if (config.oledEnabled && config.oledSda == config.oledScl) return false;
-  uint8_t used[11];
-  uint8_t count = 0;
-  used[count++] = config.ledPin;
-  if (config.oledEnabled) {
-    used[count++] = config.oledSda;
-    used[count++] = config.oledScl;
-  }
-  if (config.buttonsEnabled) {
-#if !SOC_TOUCH_SENSOR_SUPPORTED
-    if (config.buttonMode == BIM_CAPACITIVE) return false;
-#endif
-    for (uint8_t pin : config.buttonPins) used[count++] = pin;
-  }
-  for (uint8_t i = 0; i < count; ++i) {
-    for (uint8_t j = i + 1; j < count; ++j) {
-      if (used[i] == used[j]) return false;
-    }
-  }
-  return true;
-}
-
 void clampSectionsToStrip(Config &config) {
   for (uint8_t i = 0; i < config.sectionCount; ++i) {
     LedSection &section = config.sections[i];
