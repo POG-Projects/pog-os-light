@@ -388,7 +388,7 @@ async function finishOnboarding(){
     setObStep(3);
   }catch(e){
     button.disabled=false;button.textContent='Connecter et terminer';
-    toast('Connexion interrompue · réessayez');
+    toast(e.message||'Connexion interrompue · réessayez');
   }
 }
 $('obLedPin').addEventListener('change',()=>$('obPinHint').textContent='GPIO '+$('obLedPin').value);
@@ -460,8 +460,10 @@ async function applyHw(){
   const cfg={numLeds:+$('numLeds').value,ledPin:+$('ledPin').value,analog:$('analog').value=='1',purpose:+$('purpose').value,reverse:$('reverse').value=='1',maxMilliAmps:+$('maxMilliAmps').value,
     oledEnabled:oledOn,oledSda:oledPins[0],oledScl:oledPins[1],oledAddress:+$('oledAddress').value,
     buttonsEnabled:buttonsOn,buttonMode:+$('buttonMode').value,buttonPins};
-  const r=await api('/api/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(cfg)});
-  if(r.reboot){toast('Redémarrage en cours…');setTimeout(()=>location.reload(),8000);}else toast('Réglages appliqués');
+  try{
+    const r=await api('/api/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(cfg)});
+    if(r.reboot){toast('Redémarrage en cours…');setTimeout(()=>location.reload(),8000);}else toast('Réglages appliqués');
+  }catch(e){toast(e.message||'Enregistrement impossible')}
 }
 function updatePeripheralUi(){
   const oledOn=$('oledEnabled').value==='1',buttonsOn=$('buttonsEnabled').value==='1';

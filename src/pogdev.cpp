@@ -23,6 +23,19 @@ namespace {
 constexpr char kNamespace[] = "pogdev";
 constexpr uint32_t kStatePeriodMs = 30000;
 constexpr uint32_t kReconnectPeriodMs = 5000;
+// Palier de reprise après une publication refusée : on double jusqu’au plafond.
+constexpr uint32_t kMinBackoffMs = 500;
+constexpr uint32_t kMaxBackoffMs = 30000;
+// PubSubClient stocke sa taille de tampon dans un uint16_t. Au-delà,
+// setBufferSize tronque en silence et le message part amputé : on refuse.
+constexpr size_t kMaxMqttBuffer = 65535;
+// Budget de tampon par découpage, mesuré au banc le 20 août 2026 : 2 896 octets
+// de manifeste à une section, 5 837 à deux, 14 683 à huit — environ 1 475
+// octets par section au-delà de la première. Arrondi largement au-dessus pour
+// absorber les noms longs : le nom d'une section paraît huit fois dans le
+// manifeste, et le portail le borne à 32 caractères (web_ui.h, saveSections).
+constexpr size_t kHelloBaseBytes = 4096;
+constexpr size_t kHelloPerSectionBytes = 2048;
 
 struct Credentials {
   String deviceId;
@@ -106,20 +119,24 @@ void addColorEntity(JsonArray entities, const String &key, const String &name,
   entity["traits"].to<JsonArray>().add<JsonObject>()["id"] = "color";
 }
 
-void addRoomSyncEntity(JsonArray entities) {
-  JsonObject entity = addEntity(
-      entities, "room_sync", "Synchronisation de pièce", "light");
-  JsonObject trait = entity["traits"].to<JsonArray>().add<JsonObject>();
+// Synchronisation d'ambiance et choix d'utilité : deux gestes de la lampe, pas
+// deux objets du foyer. Ils étaient déclarés comme les entités « room_sync » et
+// « purpose » ; ce sont désormais deux commandes du trait `action` porté par
+// l'entité meneuse « light ». Le trait `action` a le domaine "switch" côté
+// PogHome, donc il ne déloge pas le domaine "light" : le slug reste le même.
+void addLightActions(JsonArray traits, const char *const *purposeLabels) {
+  JsonObject trait = traits.add<JsonObject>();
   trait["id"] = "action";
-  JsonObject command =
-      trait["config"]["commands"].to<JsonArray>().add<JsonObject>();
-  command["name"] = "sync_effect";
-  command["label"] = "Synchroniser l’ambiance";
-  command["sensitive"] = false;
-  command["reversible"] = true;
-  JsonArray params = command["params"].to<JsonArray>();
+  JsonArray commands = trait["config"]["commands"].to<JsonArray>();
 
-  JsonObject effect = params.add<JsonObject>();
+  JsonObject sync = commands.add<JsonObject>();
+  sync["name"] = "sync_effect";
+  sync["label"] = "Synchroniser l’ambiance";
+  sync["sensitive"] = false;
+  sync["reversible"] = true;
+  JsonArray syncParams = sync["params"].to<JsonArray>();
+
+  JsonObject effect = syncParams.add<JsonObject>();
   effect["name"] = "effect";
   effect["kind"] = "enum";
   effect["required"] = true;
@@ -127,7 +144,7 @@ void addRoomSyncEntity(JsonArray entities) {
   for (const char *name : kEffectNames) options.add(name);
 
   auto numberParam = [&](const char *name, float min, float max) {
-    JsonObject param = params.add<JsonObject>();
+    JsonObject param = syncParams.add<JsonObject>();
     param["name"] = name;
     param["kind"] = "number";
     param["required"] = true;
@@ -140,45 +157,19 @@ void addRoomSyncEntity(JsonArray entities) {
   numberParam("primary_saturation", 0, 100);
   numberParam("secondary_hue", 0, 360);
   numberParam("secondary_saturation", 0, 100);
-}
 
-void addPinSelect(JsonArray entities, const String &key, const String &name,
-                  const char *category, bool ledOnly) {
-#if CONFIG_IDF_TARGET_ESP32C3
-  static const char *const ledPins[] = {
-      "GPIO 2", "GPIO 3", "GPIO 4", "GPIO 5", "GPIO 6", "GPIO 7", "GPIO 10"};
-  static const char *const gpioPins[] = {
-      "GPIO 0", "GPIO 1", "GPIO 2", "GPIO 3", "GPIO 4", "GPIO 5",
-      "GPIO 6", "GPIO 7", "GPIO 8", "GPIO 9", "GPIO 10", "GPIO 20", "GPIO 21"};
-#elif CONFIG_IDF_TARGET_ESP32S3
-  static const char *const ledPins[] = {
-      "GPIO 2", "GPIO 15", "GPIO 16", "GPIO 17", "GPIO 18",
-      "GPIO 21", "GPIO 38", "GPIO 47", "GPIO 48"};
-  static const char *const gpioPins[] = {
-      "GPIO 1", "GPIO 2", "GPIO 3", "GPIO 4", "GPIO 5", "GPIO 6",
-      "GPIO 7", "GPIO 8", "GPIO 9", "GPIO 10", "GPIO 11", "GPIO 12",
-      "GPIO 13", "GPIO 14", "GPIO 15", "GPIO 16", "GPIO 17", "GPIO 18",
-      "GPIO 21", "GPIO 38", "GPIO 47", "GPIO 48"};
-#else
-  static const char *const ledPins[] = {
-      "GPIO 2", "GPIO 4", "GPIO 5", "GPIO 12", "GPIO 13", "GPIO 14",
-      "GPIO 16", "GPIO 17", "GPIO 18", "GPIO 19", "GPIO 21", "GPIO 22", "GPIO 23"};
-  static const char *const gpioPins[] = {
-      "GPIO 2", "GPIO 4", "GPIO 5", "GPIO 12", "GPIO 13", "GPIO 14",
-      "GPIO 15", "GPIO 16", "GPIO 17", "GPIO 18", "GPIO 19", "GPIO 21",
-      "GPIO 22", "GPIO 23", "GPIO 25", "GPIO 26", "GPIO 27", "GPIO 32", "GPIO 33"};
-#endif
-  if (ledOnly) {
-    addSelectEntity(entities, key, name, category, ledPins,
-                    sizeof(ledPins) / sizeof(ledPins[0]));
-  } else {
-    addSelectEntity(entities, key, name, category, gpioPins,
-                    sizeof(gpioPins) / sizeof(gpioPins[0]));
-  }
-}
-
-int parsePinOption(const String &option) {
-  return option.startsWith("GPIO ") ? option.substring(5).toInt() : -1;
+  JsonObject setPurpose = commands.add<JsonObject>();
+  setPurpose["name"] = "set_purpose";
+  setPurpose["label"] = "Choisir l’utilité";
+  setPurpose["sensitive"] = false;
+  setPurpose["reversible"] = true;
+  JsonObject purposeParam =
+      setPurpose["params"].to<JsonArray>().add<JsonObject>();
+  purposeParam["name"] = "purpose";
+  purposeParam["kind"] = "enum";
+  purposeParam["required"] = true;
+  JsonArray purposeOptions = purposeParam["enum"].to<JsonArray>();
+  for (uint8_t i = 0; i < LP_COUNT; ++i) purposeOptions.add(purposeLabels[i]);
 }
 
 int purposeFromLabel(const String &option) {
@@ -353,6 +344,40 @@ uint32_t hsToRgb(float hue, float saturation) {
   return ((uint32_t)rgb.r << 16) | ((uint32_t)rgb.g << 8) | rgb.b;
 }
 
+// PubSubClient refuse en silence tout message plus grand que son tampon, et un
+// realloc raté laisse `bufferSize` à sa valeur par défaut de 256 octets : la
+// lampe se connecte, publie « online », puis n'envoie plus rien. On ne
+// redimensionne donc qu'à la hausse, on teste le retour, et on le dit.
+bool ensureMqttBuffer(size_t payloadLength) {
+  // en-tête fixe + longueur de sujet encodée + marge de sécurité
+  size_t needed = payloadLength + 16;
+  // setBufferSize prend un uint16_t : au-delà de 65 519 octets utiles, un
+  // size_t se tronque à la conversion et le tampon obtenu est minuscule alors
+  // que l'appel renvoie true. Inatteignable avec le manifeste réduit, mais une
+  // troncature muette est le genre de panne qu'on ne diagnostique jamais.
+  if (needed > kMaxMqttBuffer) {
+    Serial.printf("[PogHome] message de %u octets au-delà du maximum MQTT "
+                  "(%u), refusé\n",
+                  (unsigned)payloadLength,
+                  (unsigned)(kMaxMqttBuffer - 16));
+    return false;
+  }
+  if (mqtt.getBufferSize() >= needed) return true;
+  if (mqtt.setBufferSize((uint16_t)needed)) return true;
+  Serial.printf("[PogHome] tampon MQTT trop petit: %u octets refusés\n",
+                (unsigned)needed);
+  return false;
+}
+
+// Budget de charge utile à réserver pour le découpage courant. La garde
+// `> 1` est celle de publishHello : en dessous, aucune entité de section n'est
+// déclarée et le manifeste ne dépend plus du nombre de sections.
+size_t mqttPayloadBudget(uint8_t sectionCount) {
+  size_t budget = kHelloBaseBytes;
+  if (sectionCount > 1) budget += (size_t)sectionCount * kHelloPerSectionBytes;
+  return budget > kMaxMqttBuffer - 16 ? kMaxMqttBuffer - 16 : budget;
+}
+
 void publishHello() {
   Config snapshot;
   xSemaphoreTake(g_configMutex, portMAX_DELAY);
@@ -367,6 +392,12 @@ void publishHello() {
   doc["name"] = "PogLight";
   JsonArray entities = doc["entities"].to<JsonArray>();
 
+  const char *purposeLabels[LP_COUNT];
+  for (uint8_t i = 0; i < LP_COUNT; ++i) purposeLabels[i] = lightPurposeLabel(i);
+
+  // --- Les quatre de façade -------------------------------------------------
+  // Une entité est un état du foyer, qu'on observe ou qu'on commande parce que
+  // la maison vit. Ces quatre-là sont les seules que PogHome montrait déjà.
   JsonObject light = entities.add<JsonObject>();
   light["key"] = "light";
   light["name"] = "Éclairage";
@@ -378,50 +409,34 @@ void publishHello() {
   masterPower["config"]["purpose_label"] = lightPurposeLabel(snapshot.purpose);
   lightTraits.add<JsonObject>()["id"] = "brightness";
   lightTraits.add<JsonObject>()["id"] = "color";
+  addLightActions(lightTraits, purposeLabels);
 
   addColorEntity(entities, "accent", "Couleur secondaire", "light");
   addSelectEntity(entities, "effect", "Effet", "light", kEffectNames, TP_COUNT);
   addNumberEntity(entities, "speed", "Vitesse", "light", 0, 100, 1, "%");
-  addRoomSyncEntity(entities);
 
+  // --- Les six rangées ------------------------------------------------------
+  // Réglables à la main, mais hors des surfaces par défaut : le rang tient dans
+  // la catégorie « config », le seul jeton que PogHome sache lire aujourd'hui
+  // avec « diagnostic ». Ce qui reste ici se règle en regardant le ruban ou
+  // parce qu'un habitant le décide (éteindre l'écran la nuit, verrouiller les
+  // boutons) — pas parce qu'un tournevis est passé.
   static const char *const directions[] = {"Normal", "Inversé"};
-  static const char *const stripModes[] = {"Adressable · ARGB", "Analogique · PWM"};
-  static const char *const oledAddresses[] = {"0x3C", "0x3D"};
-  static const char *const buttonModes[] = {"Poussoirs · GPIO vers GND", "Touches capacitives"};
-  const char *purposeLabels[LP_COUNT];
-  for (uint8_t i = 0; i < LP_COUNT; ++i) purposeLabels[i] = lightPurposeLabel(i);
-
-  addSelectEntity(entities, "purpose", "Utilité de la lampe", "configuration",
-                  purposeLabels, LP_COUNT);
-  addSelectEntity(entities, "direction", "Sens du ruban", "configuration",
+  addSelectEntity(entities, "direction", "Sens du ruban", "config",
                   directions, 2);
-  addPinSelect(entities, "led_pin", "GPIO du ruban", "matériel", true);
-  addNumberEntity(entities, "led_count", "Nombre de LED", "matériel", 1, MAX_LEDS);
-  addNumberEntity(entities, "power_limit", "Limite d’alimentation", "matériel",
+  addNumberEntity(entities, "led_count", "Nombre de LED", "config", 1, MAX_LEDS);
+  addNumberEntity(entities, "power_limit", "Limite d’alimentation", "config",
                   100, 10000, 100, "mA");
-  addSelectEntity(entities, "color_order", "Ordre des couleurs", "matériel",
+  addSelectEntity(entities, "color_order", "Ordre des couleurs", "config",
                   kColorOrders, ORDER_COUNT);
-  addSelectEntity(entities, "strip_mode", "Type de ruban", "matériel",
-                  stripModes, 2);
+  addSwitchEntity(entities, "oled_enabled", "Écran OLED", "config");
+  addSwitchEntity(entities, "buttons_enabled", "Boutons de la lampe", "config");
 
-  addSwitchEntity(entities, "oled_enabled", "Écran OLED", "matériel");
-  addPinSelect(entities, "oled_sda", "OLED · GPIO SDA", "matériel", false);
-  addPinSelect(entities, "oled_scl", "OLED · GPIO SCL", "matériel", false);
-  addSelectEntity(entities, "oled_address", "OLED · Adresse I²C", "matériel",
-                  oledAddresses, 2);
-  addSwitchEntity(entities, "buttons_enabled", "Boutons de la lampe", "matériel");
-  addSelectEntity(entities, "button_mode", "Type de boutons", "matériel",
-                  buttonModes, 2);
-  static const char *const buttonNames[] = {"Haut", "Bas", "Gauche", "Droite"};
-  for (uint8_t i = 0; i < 4; ++i) {
-    addPinSelect(entities, "button_pin_" + String(i),
-                 "Bouton " + String(buttonNames[i]) + " · GPIO", "matériel", false);
-  }
-
-  addTextEntity(entities, "wifi_ssid", "Réseau Wi-Fi", "réseau");
-  addTextEntity(entities, "wifi_password", "Mot de passe Wi-Fi", "réseau", true);
-  addNumberEntity(entities, "section_count", "Nombre de sections", "sections",
-                  0, MAX_SECTIONS);
+  // Le câblage (broche du ruban, broches et adresse de l'écran, broches et type
+  // des boutons, type de ruban) et l'appairage Wi-Fi ne sont plus déclarés :
+  // ils ne changent que quand un tournevis passe. Ils restent intégralement
+  // réglables au portail web embarqué, authentifié — POST /api/config pour le
+  // matériel et les sections, POST /api/wifi pour le réseau avec scan.
 
   JsonObject signal = entities.add<JsonObject>();
   signal["key"] = "wifi_signal";
@@ -432,39 +447,51 @@ void publishHello() {
   signalTrait["config"]["unit"] = "dBm";
   signalTrait["config"]["kind"] = "signal_strength";
 
-  for (uint8_t i = 0; i < snapshot.sectionCount; ++i) {
-    const LedSection& section = snapshot.sections[i];
-    JsonObject entity = entities.add<JsonObject>();
-    String base = "section_" + String(section.id);
-    entity["key"] = base;
-    entity["name"] = section.name;
-    entity["category"] = "sections";
-    JsonArray traits = entity["traits"].to<JsonArray>();
-    JsonObject power = traits.add<JsonObject>();
-    power["id"] = "on_off";
-    power["config"]["purpose"] = lightPurposeKey(section.purpose);
-    power["config"]["purpose_label"] = lightPurposeLabel(section.purpose);
-    power["config"]["start"] = section.start + 1;
-    power["config"]["end"] = section.start + section.count;
-    traits.add<JsonObject>()["id"] = "brightness";
-    traits.add<JsonObject>()["id"] = "color";
-    JsonObject sectionEffect = traits.add<JsonObject>();
-    sectionEffect["id"] = "select";
-    JsonArray sectionOptions = sectionEffect["config"]["options"].to<JsonArray>();
-    for (const char *name : kEffectNames) sectionOptions.add(name);
+  // --- Les sections, seulement s'il y en a plus d'une -----------------------
+  // Avec une section unique, start=1 et end=numLeds couvrent le ruban entier :
+  // la section pilote exactement les mêmes LED que l'entité meneuse, et les
+  // huit clés qu'elle ajoute sont huit doublons. À partir de deux sections ce
+  // sont de vrais gestes distincts, et elles reviennent à l'identique — mêmes
+  // clés, donc mêmes lignes en base, donc noms et identifiants HomeKit
+  // conservés. Le découpage se fait désormais au portail web, pas depuis une
+  // entité : une entité qui fabrique des entités n'est pas un état du foyer.
+  if (snapshot.sectionCount > 1) {
+    for (uint8_t i = 0; i < snapshot.sectionCount; ++i) {
+      const LedSection& section = snapshot.sections[i];
+      JsonObject entity = entities.add<JsonObject>();
+      String base = "section_" + String(section.id);
+      entity["key"] = base;
+      entity["name"] = section.name;
+      entity["category"] = "light";
+      JsonArray traits = entity["traits"].to<JsonArray>();
+      JsonObject power = traits.add<JsonObject>();
+      power["id"] = "on_off";
+      power["config"]["purpose"] = lightPurposeKey(section.purpose);
+      power["config"]["purpose_label"] = lightPurposeLabel(section.purpose);
+      power["config"]["start"] = section.start + 1;
+      power["config"]["end"] = section.start + section.count;
+      traits.add<JsonObject>()["id"] = "brightness";
+      traits.add<JsonObject>()["id"] = "color";
+      JsonObject sectionEffect = traits.add<JsonObject>();
+      sectionEffect["id"] = "select";
+      JsonArray sectionOptions = sectionEffect["config"]["options"].to<JsonArray>();
+      for (const char *name : kEffectNames) sectionOptions.add(name);
 
-    addSwitchEntity(entities, base + "_enabled", section.name + " · Active", "sections");
-    addTextEntity(entities, base + "_name", section.name + " · Nom", "sections");
-    addSelectEntity(entities, base + "_purpose", section.name + " · Utilité",
-                    "sections", purposeLabels, LP_COUNT);
-    addNumberEntity(entities, base + "_start", section.name + " · Première LED",
-                    "sections", 1, snapshot.numLeds);
-    addNumberEntity(entities, base + "_end", section.name + " · Dernière LED",
-                    "sections", 1, snapshot.numLeds);
-    addColorEntity(entities, base + "_accent", section.name + " · Couleur secondaire",
-                   "sections");
-    addNumberEntity(entities, base + "_speed", section.name + " · Vitesse",
-                    "sections", 0, 100, 1, "%");
+      addSwitchEntity(entities, base + "_enabled", section.name + " · Active", "light");
+      addColorEntity(entities, base + "_accent", section.name + " · Couleur secondaire",
+                     "light");
+      addNumberEntity(entities, base + "_speed", section.name + " · Vitesse",
+                      "light", 0, 100, 1, "%");
+      // La géométrie et le vocabulaire d'un découpage se posent une fois : rang
+      // « config », comme les six rangées de la lampe.
+      addTextEntity(entities, base + "_name", section.name + " · Nom", "config");
+      addSelectEntity(entities, base + "_purpose", section.name + " · Utilité",
+                      "config", purposeLabels, LP_COUNT);
+      addNumberEntity(entities, base + "_start", section.name + " · Première LED",
+                      "config", 1, snapshot.numLeds);
+      addNumberEntity(entities, base + "_end", section.name + " · Dernière LED",
+                      "config", 1, snapshot.numLeds);
+    }
   }
 
   doc["local_rules"].to<JsonArray>();
@@ -472,10 +499,38 @@ void publishHello() {
   serializeJson(doc, payload);
   String topic = "pog/" + credentials.deviceId + "/hello";
   bool published = !doc.overflowed() &&
+                   ensureMqttBuffer(payload.length() + topic.length()) &&
                    mqtt.publish(topic.c_str(), payload.c_str(), true);
   Serial.printf("[PogHome] manifeste: %u entités, %u octets, %s\n",
                 entities.size(), payload.length(), published ? "publié" : "échec");
   helloDirty = !published;
+}
+
+// Ce que le ruban montre vraiment. leds.cpp saute toute section dont `on` ou
+// `enabled` est faux : avec un découpage, `pattern != TP_OFF` ne suffit donc pas
+// à dire que la lampe éclaire. Publier « allumé » sur un ruban noir met POG Home
+// dans un état que l'habitant ne peut plus corriger — il voit une lampe allumée
+// et n'a plus de geste à faire.
+bool lightIsOn(const Config &config) {
+  if (config.pattern == TP_OFF) return false;
+  if (!config.sectionCount) return true;
+  for (uint8_t i = 0; i < config.sectionCount; ++i) {
+    if (config.sections[i].enabled && config.sections[i].on) return true;
+  }
+  return false;
+}
+
+// Rallume les sections seulement si AUCUNE ne rendrait quoi que ce soit. Une
+// extinction section par section reste respectée tant qu'il en reste une
+// allumée ; on ne force la main que dans le cas où « allumer » ne produirait
+// rien du tout. `enabled` n'est volontairement pas touché : il se pose au
+// portail et se répare au portail, alors que `on` se pose à distance — c'est
+// celui-là qui pouvait piéger.
+void restoreRenderableSections(Config &config) {
+  for (uint8_t i = 0; i < config.sectionCount; ++i) {
+    if (config.sections[i].enabled && config.sections[i].on) return;
+  }
+  for (uint8_t i = 0; i < config.sectionCount; ++i) config.sections[i].on = true;
 }
 
 void publishState() {
@@ -489,7 +544,7 @@ void publishState() {
   rgbToHs(snapshot.secondaryColor, accentHue, accentSaturation);
   JsonDocument doc;
   JsonObject light = doc["light"].to<JsonObject>();
-  light["on"] = snapshot.pattern != TP_OFF;
+  light["on"] = lightIsOn(snapshot);
   light["brightness"] = roundf(snapshot.brightness * 100.0f / 255.0f);
   light["mode"] = "hs";
   light["hue"] = primaryHue;
@@ -501,65 +556,56 @@ void publishState() {
   uint8_t effectIndex = snapshot.pattern < TP_COUNT ? snapshot.pattern : TP_RAINBOW;
   doc["effect"]["current"] = kEffectNames[effectIndex];
   doc["speed"]["value"] = snapshot.speed;
-  doc["purpose"]["current"] = lightPurposeLabel(snapshot.purpose);
   doc["direction"]["current"] = snapshot.reverse ? "Inversé" : "Normal";
-  doc["led_pin"]["current"] = "GPIO " + String(snapshot.ledPin);
   doc["led_count"]["value"] = snapshot.numLeds;
   doc["power_limit"]["value"] = snapshot.maxMilliAmps;
   doc["color_order"]["current"] = kColorOrders[snapshot.colorOrder % ORDER_COUNT];
-  doc["strip_mode"]["current"] = snapshot.analog ? "Analogique · PWM" : "Adressable · ARGB";
   doc["oled_enabled"]["on"] = snapshot.oledEnabled;
-  doc["oled_sda"]["current"] = "GPIO " + String(snapshot.oledSda);
-  doc["oled_scl"]["current"] = "GPIO " + String(snapshot.oledScl);
-  char oledAddress[8];
-  snprintf(oledAddress, sizeof(oledAddress), "0x%02X", snapshot.oledAddress);
-  doc["oled_address"]["current"] = oledAddress;
   doc["buttons_enabled"]["on"] = snapshot.buttonsEnabled;
-  doc["button_mode"]["current"] =
-      snapshot.buttonMode == BIM_CAPACITIVE ? "Touches capacitives" : "Poussoirs · GPIO vers GND";
-  for (uint8_t i = 0; i < 4; ++i) {
-    doc["button_pin_" + String(i)]["current"] = "GPIO " + String(snapshot.buttonPins[i]);
-  }
-  doc["wifi_ssid"]["value"] = snapshot.wifiSsid;
-  // Ce champ reste volontairement vide : PogHome peut remplacer le secret,
-  // mais PogLight ne le republie jamais sur MQTT.
-  doc["wifi_password"]["value"] = "";
-  doc["section_count"]["value"] = snapshot.sectionCount;
   doc["wifi_signal"]["value"] = WiFi.RSSI();
   doc["wifi_signal"]["kind"] = "signal_strength";
-  for (uint8_t i = 0; i < snapshot.sectionCount; ++i) {
-    const LedSection& section = snapshot.sections[i];
-    String key = "section_" + String(section.id);
-    JsonObject state = doc[key].to<JsonObject>();
-    state["on"] = section.enabled && section.on && snapshot.pattern != TP_OFF;
-    state["brightness"] = roundf(section.brightness * 100.0f / 255.0f);
-    float hue, saturation;
-    rgbToHs(section.primaryColor, hue, saturation);
-    state["mode"] = "hs";
-    state["hue"] = hue;
-    state["saturation"] = saturation;
-    uint8_t sectionPattern = section.pattern < TP_COUNT ? section.pattern : TP_SOLID;
-    state["current"] = kEffectNames[sectionPattern];
-    state["purpose"] = lightPurposeKey(section.purpose);
-    doc[key + "_enabled"]["on"] = section.enabled;
-    doc[key + "_name"]["value"] = section.name;
-    doc[key + "_purpose"]["current"] = lightPurposeLabel(section.purpose);
-    doc[key + "_start"]["value"] = section.start + 1;
-    doc[key + "_end"]["value"] = section.start + section.count;
-    float sectionAccentHue, sectionAccentSaturation;
-    rgbToHs(section.secondaryColor, sectionAccentHue, sectionAccentSaturation);
-    JsonObject sectionAccent = doc[key + "_accent"].to<JsonObject>();
-    sectionAccent["mode"] = "hs";
-    sectionAccent["hue"] = sectionAccentHue;
-    sectionAccent["saturation"] = sectionAccentSaturation;
-    doc[key + "_speed"]["value"] = section.speed;
+  // L'utilité ne sort plus par ici : elle voyage dans le `config` du trait
+  // on_off de « light », republié par set_purpose qui pose schemaChanged.
+  // La garde doit être littéralement la même que dans publishHello : un état
+  // publié sans entité déclarée reste retenu sur le bus sans que personne
+  // ne le voie, et une entité déclarée sans état n'affiche rien.
+  if (snapshot.sectionCount > 1) {
+    for (uint8_t i = 0; i < snapshot.sectionCount; ++i) {
+      const LedSection& section = snapshot.sections[i];
+      String key = "section_" + String(section.id);
+      JsonObject state = doc[key].to<JsonObject>();
+      state["on"] = section.enabled && section.on && snapshot.pattern != TP_OFF;
+      state["brightness"] = roundf(section.brightness * 100.0f / 255.0f);
+      float hue, saturation;
+      rgbToHs(section.primaryColor, hue, saturation);
+      state["mode"] = "hs";
+      state["hue"] = hue;
+      state["saturation"] = saturation;
+      uint8_t sectionPattern = section.pattern < TP_COUNT ? section.pattern : TP_SOLID;
+      state["current"] = kEffectNames[sectionPattern];
+      state["purpose"] = lightPurposeKey(section.purpose);
+      doc[key + "_enabled"]["on"] = section.enabled;
+      doc[key + "_name"]["value"] = section.name;
+      doc[key + "_purpose"]["current"] = lightPurposeLabel(section.purpose);
+      doc[key + "_start"]["value"] = section.start + 1;
+      doc[key + "_end"]["value"] = section.start + section.count;
+      float sectionAccentHue, sectionAccentSaturation;
+      rgbToHs(section.secondaryColor, sectionAccentHue, sectionAccentSaturation);
+      JsonObject sectionAccent = doc[key + "_accent"].to<JsonObject>();
+      sectionAccent["mode"] = "hs";
+      sectionAccent["hue"] = sectionAccentHue;
+      sectionAccent["saturation"] = sectionAccentSaturation;
+      doc[key + "_speed"]["value"] = section.speed;
+    }
   }
 
   String payload;
   serializeJson(doc, payload);
   String topic = "pog/" + credentials.deviceId + "/state";
-  mqtt.publish(topic.c_str(), payload.c_str(), true);
-  stateDirty = false;
+  // Le retour était ignoré : un état perdu ne revenait qu'au cycle de 30 s.
+  stateDirty = !(!doc.overflowed() &&
+                 ensureMqttBuffer(payload.length() + topic.length()) &&
+                 mqtt.publish(topic.c_str(), payload.c_str(), true));
 }
 
 void saveChangedConfig(bool schemaChanged = false, bool requiresReboot = false) {
@@ -574,29 +620,6 @@ bool setSwitchCommand(const String &name, bool &value) {
   else if (name == "turn_off") value = false;
   else if (name == "toggle") value = !value;
   else return false;
-  return true;
-}
-
-bool hardwarePinsValid(const Config &config) {
-  if (config.oledEnabled && config.oledSda == config.oledScl) return false;
-  uint8_t used[11];
-  uint8_t count = 0;
-  used[count++] = config.ledPin;
-  if (config.oledEnabled) {
-    used[count++] = config.oledSda;
-    used[count++] = config.oledScl;
-  }
-  if (config.buttonsEnabled) {
-#if !SOC_TOUCH_SENSOR_SUPPORTED
-    if (config.buttonMode == BIM_CAPACITIVE) return false;
-#endif
-    for (uint8_t pin : config.buttonPins) used[count++] = pin;
-  }
-  for (uint8_t i = 0; i < count; ++i) {
-    for (uint8_t j = i + 1; j < count; ++j) {
-      if (used[i] == used[j]) return false;
-    }
-  }
   return true;
 }
 
@@ -621,44 +644,61 @@ void handleCommand(char *, byte *payload, unsigned int length) {
 
   xSemaphoreTake(g_configMutex, portMAX_DELAY);
   Config before = g_config;
-  if (key == "room_sync" && name == "sync_effect") {
-    String option = params["effect"].as<String>();
-    for (uint8_t i = 0; i < TP_COUNT; ++i) {
-      if (option != kEffectNames[i]) continue;
-      g_config.pattern = i;
-      g_config.speed = constrain((int)(params["speed"] | 50), 0, 100);
-      g_config.brightness = (uint8_t)roundf(
-          constrain((float)(params["brightness"] | 100.0f), 0.0f, 100.0f) *
-          2.55f);
-      g_config.primaryColor =
-          hsToRgb(params["primary_hue"] | 0.0f,
-                  params["primary_saturation"] | 100.0f);
-      g_config.secondaryColor =
-          hsToRgb(params["secondary_hue"] | 240.0f,
-                  params["secondary_saturation"] | 100.0f);
-      if (i != TP_OFF) lastActivePattern = i;
-      for (uint8_t section = 0; section < g_config.sectionCount; ++section) {
-        LedSection &target = g_config.sections[section];
-        target.pattern = i;
-        target.speed = g_config.speed;
-        target.primaryColor = g_config.primaryColor;
-        target.secondaryColor = g_config.secondaryColor;
-        target.on = i != TP_OFF;
+  if (key == "light") {
+    if (name == "sync_effect") {
+      // Reprise de l'ancienne entité « room_sync », devenue une commande de la
+      // lampe : un geste de la lampe n'est pas un objet de plus dans la maison.
+      String option = params["effect"].as<String>();
+      for (uint8_t i = 0; i < TP_COUNT; ++i) {
+        if (option != kEffectNames[i]) continue;
+        g_config.pattern = i;
+        g_config.speed = constrain((int)(params["speed"] | 50), 0, 100);
+        g_config.brightness = (uint8_t)roundf(
+            constrain((float)(params["brightness"] | 100.0f), 0.0f, 100.0f) *
+            2.55f);
+        g_config.primaryColor =
+            hsToRgb(params["primary_hue"] | 0.0f,
+                    params["primary_saturation"] | 100.0f);
+        g_config.secondaryColor =
+            hsToRgb(params["secondary_hue"] | 240.0f,
+                    params["secondary_saturation"] | 100.0f);
+        if (i != TP_OFF) lastActivePattern = i;
+        for (uint8_t section = 0; section < g_config.sectionCount; ++section) {
+          LedSection &target = g_config.sections[section];
+          target.pattern = i;
+          target.speed = g_config.speed;
+          target.primaryColor = g_config.primaryColor;
+          target.secondaryColor = g_config.secondaryColor;
+          target.on = i != TP_OFF;
+        }
+        changed = true;
+        break;
       }
-      changed = true;
-      break;
-    }
-  } else if (key == "light") {
-    if (name == "turn_off") {
+    } else if (name == "set_purpose") {
+      // Reprise de l'ancienne entité « purpose ». schemaChanged est le seul
+      // chemin par lequel la valeur voyage encore : elle est republiée dans le
+      // `config` du trait on_off, et n'existe plus dans l'état.
+      int purpose = purposeFromLabel(params["purpose"].as<String>());
+      if (purpose >= 0) {
+        g_config.purpose = purpose;
+        changed = schemaChanged = true;
+      }
+    } else if (name == "turn_off") {
       if (g_config.pattern != TP_OFF) lastActivePattern = g_config.pattern;
       g_config.pattern = TP_OFF;
       changed = true;
     } else if (name == "turn_on") {
       if (g_config.pattern == TP_OFF) g_config.pattern = lastActivePattern;
+      restoreRenderableSections(g_config);
       changed = true;
     } else if (name == "toggle") {
-      if (g_config.pattern == TP_OFF) g_config.pattern = lastActivePattern;
-      else {
+      // Bascule sur ce que la lampe montre, pas sur `pattern` seul : sinon un
+      // ruban déjà noir parce que ses sections sont éteintes s'éteint « encore »
+      // au lieu de s'allumer.
+      if (!lightIsOn(g_config)) {
+        if (g_config.pattern == TP_OFF) g_config.pattern = lastActivePattern;
+        restoreRenderableSections(g_config);
+      } else {
         lastActivePattern = g_config.pattern;
         g_config.pattern = TP_OFF;
       }
@@ -692,12 +732,6 @@ void handleCommand(char *, byte *payload, unsigned int length) {
       g_config.reverse = option == "Inversé";
       changed = true;
     }
-  } else if (key == "purpose" && name == "select_option") {
-    int purpose = purposeFromLabel(params["option"].as<String>());
-    if (purpose >= 0) {
-      g_config.purpose = purpose;
-      changed = schemaChanged = true;
-    }
   } else if (key == "effect" && name == "select_option") {
     String option = params["option"].as<String>();
     for (uint8_t i = 0; i < TP_COUNT; ++i) {
@@ -713,12 +747,6 @@ void handleCommand(char *, byte *payload, unsigned int length) {
         changed = true;
         break;
       }
-    }
-  } else if (key == "led_pin" && name == "select_option") {
-    int pin = parsePinOption(params["option"].as<String>());
-    if (pin >= 0) {
-      g_config.ledPin = pin;
-      changed = requiresReboot = true;
     }
   } else if (key == "led_count" && name == "set_value") {
     g_config.numLeds = constrain((int)(params["value"] | 1), 1, MAX_LEDS);
@@ -736,86 +764,12 @@ void handleCommand(char *, byte *payload, unsigned int length) {
         break;
       }
     }
-  } else if (key == "strip_mode" && name == "select_option") {
-    String option = params["option"].as<String>();
-    if (option == "Adressable · ARGB" || option == "Analogique · PWM") {
-      g_config.analog = option == "Analogique · PWM";
-      changed = requiresReboot = true;
-    }
   } else if (key == "oled_enabled") {
     changed = setSwitchCommand(name, g_config.oledEnabled);
     requiresReboot = changed;
-  } else if ((key == "oled_sda" || key == "oled_scl") &&
-             name == "select_option") {
-    int pin = parsePinOption(params["option"].as<String>());
-    if (pin >= 0) {
-      if (key == "oled_sda") g_config.oledSda = pin;
-      else g_config.oledScl = pin;
-      g_config.oledSwap =
-          g_config.oledSda == OLED_SCL_PIN && g_config.oledScl == OLED_SDA_PIN;
-      changed = requiresReboot = true;
-    }
-  } else if (key == "oled_address" && name == "select_option") {
-    String option = params["option"].as<String>();
-    if (option == "0x3C" || option == "0x3D") {
-      g_config.oledAddress = option == "0x3D" ? 0x3D : 0x3C;
-      changed = requiresReboot = true;
-    }
   } else if (key == "buttons_enabled") {
     changed = setSwitchCommand(name, g_config.buttonsEnabled);
     requiresReboot = changed;
-  } else if (key == "button_mode" && name == "select_option") {
-    String option = params["option"].as<String>();
-    if (option == "Poussoirs · GPIO vers GND" || option == "Touches capacitives") {
-      g_config.buttonMode =
-          option == "Touches capacitives" ? BIM_CAPACITIVE : BIM_DIGITAL_PULLUP;
-      changed = requiresReboot = true;
-    }
-  } else if (key.startsWith("button_pin_") && name == "select_option") {
-    int index = key.substring(11).toInt();
-    int pin = parsePinOption(params["option"].as<String>());
-    if (index >= 0 && index < 4 && pin >= 0) {
-      g_config.buttonPins[index] = pin;
-      changed = requiresReboot = true;
-    }
-  } else if (key == "wifi_ssid" && name == "set_text") {
-    String value = params["value"].as<String>();
-    value.trim();
-    if (value.length() && value.length() <= 32) {
-      g_config.wifiSsid = value;
-      changed = requiresReboot = true;
-    }
-  } else if (key == "wifi_password" && name == "set_text") {
-    String value = params["value"].as<String>();
-    if (value.length() >= 8 && value.length() <= 64) {
-      g_config.wifiPass = value;
-      changed = requiresReboot = true;
-    }
-  } else if (key == "section_count" && name == "set_value") {
-    uint8_t requested =
-        constrain((int)(params["value"] | 0), 0, MAX_SECTIONS);
-    while (g_config.sectionCount < requested) {
-      uint8_t index = g_config.sectionCount;
-      LedSection section;
-      section.id = g_config.nextSectionId++;
-      section.name = "Section " + String(index + 1);
-      uint16_t nextStart = 0;
-      if (index) {
-        const LedSection &previous = g_config.sections[index - 1];
-        nextStart = min((uint16_t)(previous.start + previous.count),
-                        (uint16_t)(g_config.numLeds - 1));
-      }
-      section.start = nextStart;
-      section.count = max((uint16_t)1, (uint16_t)(g_config.numLeds - nextStart));
-      section.purpose = g_config.purpose;
-      section.primaryColor = g_config.primaryColor;
-      section.secondaryColor = g_config.secondaryColor;
-      section.pattern = g_config.pattern == TP_OFF ? TP_SOLID : g_config.pattern;
-      section.speed = g_config.speed;
-      g_config.sections[g_config.sectionCount++] = section;
-    }
-    if (requested < g_config.sectionCount) g_config.sectionCount = requested;
-    changed = schemaChanged = requested != before.sectionCount;
   } else if (key.startsWith("section_")) {
     int suffixAt = key.indexOf('_', 8);
     uint16_t id = key.substring(8, suffixAt < 0 ? key.length() : suffixAt).toInt();
@@ -891,14 +845,32 @@ void handleCommand(char *, byte *payload, unsigned int length) {
       break;
     }
   }
-  if (changed && !hardwarePinsValid(g_config)) {
+  // Les broches ne sont plus déclarées, mais oled_enabled et buttons_enabled
+  // restent écrivables : allumer un périphérique dont les broches entrent en
+  // collision avec la sortie LED annule tout. La correction se fait désormais
+  // au portail web uniquement, donc le refus doit au moins être visible — on le
+  // trace et on republie l'état pour que l'interrupteur revienne à sa position
+  // réelle au lieu de paraître accepté.
+  bool reverted = false;
+  // On n'annule que la commande qui INTRODUIT la collision. Juger la
+  // configuration entière annulait toute commande posant `changed` — allumer la
+  // lampe, changer sa couleur — dès qu'une collision était déjà persistée : la
+  // lampe devenait sourde à POG Home, en silence, pour une cause qui n'avait
+  // rien à voir avec le geste refusé. Et comme la réparation se fait au portail,
+  // rien dans POG Home n'aurait indiqué où regarder.
+  if (changed && !hardwarePinsValid(g_config) && hardwarePinsValid(before)) {
     g_config = before;
     changed = schemaChanged = requiresReboot = false;
+    reverted = true;
   }
   if (changed) saveChangedConfig(schemaChanged, requiresReboot);
   xSemaphoreGive(g_configMutex);
 
-  if (changed && mqtt.connected()) {
+  if (reverted) {
+    Serial.printf("[PogHome] %s refusé: collision de broches, à corriger sur "
+                  "http://%s.local\n", key.c_str(), MDNS_NAME);
+  }
+  if ((changed || reverted) && mqtt.connected()) {
     if (schemaChanged) publishHello();
     publishState();
   }
@@ -907,10 +879,17 @@ void handleCommand(char *, byte *payload, unsigned int length) {
 bool connectMqtt() {
   mqtt.setServer(credentials.host.c_str(), credentials.port);
   mqtt.setCallback(handleCommand);
-  // Le manifeste inclut tous les réglages et jusqu’à huit sections complètes.
-  // 24 Kio couvrent le JSON maximal tout en laissant au document dynamique
-  // assez de mémoire pour construire l’inventaire sur l’ESP32-C3.
-  mqtt.setBufferSize(24576);
+  // Dimensionné à la connexion sur le découpage RÉEL, pas sur un pire cas à huit
+  // sections que personne n'a — les 24 Kio d'avant — ni sur une constante qu'il
+  // faudrait faire grandir en cours de session. C'est le moment où le tas est
+  // le moins fragmenté : un realloc plus tard, sur une lampe qui tourne depuis
+  // des semaines, est exactement celui qui échoue, et ensureMqttBuffer ne
+  // saurait alors que constater. Il reste le filet, il n'est plus le plan.
+  uint8_t sectionCount;
+  xSemaphoreTake(g_configMutex, portMAX_DELAY);
+  sectionCount = g_config.sectionCount;
+  xSemaphoreGive(g_configMutex);
+  ensureMqttBuffer(mqttPayloadBudget(sectionCount));
   mqtt.setKeepAlive(30);
   String statusTopic = "pog/" + credentials.deviceId + "/status";
   bool ok = mqtt.connect(credentials.deviceId.c_str(), credentials.deviceId.c_str(),
@@ -939,6 +918,10 @@ void pogdevTask(void *) {
   uint32_t nextEnrolment = 0;
   uint32_t nextReconnect = 0;
   uint32_t nextState = 0;
+  uint32_t nextHelloAttempt = 0;
+  uint32_t nextStateAttempt = 0;
+  uint32_t helloBackoffMs = kMinBackoffMs;
+  uint32_t stateBackoffMs = kMinBackoffMs;
   uint32_t enrolmentStarted = millis();
   bool refreshAnnouncement = true;
   uint32_t nextRediscovery = 0;
@@ -983,9 +966,34 @@ void pogdevTask(void *) {
       }
     } else {
       mqtt.loop();
-      if (helloDirty) publishHello();
-      if (stateDirty || (int32_t)(now - nextState) >= 0) {
+      // Une publication ratée reconstruisait le manifeste entier cinquante fois
+      // par seconde, indéfiniment : on réessaie avec un délai qui double.
+      if (helloDirty && (int32_t)(now - nextHelloAttempt) >= 0) {
+        publishHello();
+        if (helloDirty) {
+          // Échec : on repousse du palier courant, puis on double pour le
+          // suivant. Le premier réessai attend donc bien kMinBackoffMs.
+          nextHelloAttempt = now + helloBackoffMs;
+          helloBackoffMs = min(helloBackoffMs * 2, kMaxBackoffMs);
+        } else {
+          // Succès : rien à rattraper. Le palier ne doit surtout pas s'appliquer
+          // à la publication SUIVANTE, qui n'a rien fait de mal.
+          helloBackoffMs = kMinBackoffMs;
+          nextHelloAttempt = now;
+        }
+      }
+      // Même garde côté état, sans quoi tester le retour de mqtt.publish
+      // créerait exactement la boucle que l’on vient de fermer.
+      if ((stateDirty && (int32_t)(now - nextStateAttempt) >= 0) ||
+          (int32_t)(now - nextState) >= 0) {
         publishState();
+        if (stateDirty) {
+          nextStateAttempt = now + stateBackoffMs;
+          stateBackoffMs = min(stateBackoffMs * 2, kMaxBackoffMs);
+        } else {
+          stateBackoffMs = kMinBackoffMs;
+          nextStateAttempt = now;
+        }
         nextState = now + kStatePeriodMs;
       }
     }
