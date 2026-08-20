@@ -9,3 +9,7 @@
 // apMode = true quand l'ESP32 sert le portail captif (pas de WiFi configure / echec).
 void webBegin(bool apMode);
 void webLoop();   // a appeler dans loop() : DNS captif + traitement des requetes HTTP
+
+// Bascule du portail captif sans redemarrer le serveur HTTP deja en ecoute :
+// le secours WiFi de main.cpp ouvre puis referme le point d'acces a chaud.
+void webSetCaptivePortal(bool enabled);
