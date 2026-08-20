@@ -935,18 +935,30 @@ void pogdevTask(void *) {
       // par seconde, indéfiniment : on réessaie avec un délai qui double.
       if (helloDirty && (int32_t)(now - nextHelloAttempt) >= 0) {
         publishHello();
-        helloBackoffMs = helloDirty ? min(helloBackoffMs * 2, kMaxBackoffMs)
-                                    : kMinBackoffMs;
-        nextHelloAttempt = now + helloBackoffMs;
+        if (helloDirty) {
+          // Échec : on repousse du palier courant, puis on double pour le
+          // suivant. Le premier réessai attend donc bien kMinBackoffMs.
+          nextHelloAttempt = now + helloBackoffMs;
+          helloBackoffMs = min(helloBackoffMs * 2, kMaxBackoffMs);
+        } else {
+          // Succès : rien à rattraper. Le palier ne doit surtout pas s'appliquer
+          // à la publication SUIVANTE, qui n'a rien fait de mal.
+          helloBackoffMs = kMinBackoffMs;
+          nextHelloAttempt = now;
+        }
       }
       // Même garde côté état, sans quoi tester le retour de mqtt.publish
       // créerait exactement la boucle que l’on vient de fermer.
       if ((stateDirty && (int32_t)(now - nextStateAttempt) >= 0) ||
           (int32_t)(now - nextState) >= 0) {
         publishState();
-        stateBackoffMs = stateDirty ? min(stateBackoffMs * 2, kMaxBackoffMs)
-                                    : kMinBackoffMs;
-        nextStateAttempt = now + stateBackoffMs;
+        if (stateDirty) {
+          nextStateAttempt = now + stateBackoffMs;
+          stateBackoffMs = min(stateBackoffMs * 2, kMaxBackoffMs);
+        } else {
+          stateBackoffMs = kMinBackoffMs;
+          nextStateAttempt = now;
+        }
         nextState = now + kStatePeriodMs;
       }
     }
