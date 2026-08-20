@@ -364,32 +364,32 @@ nom de la commande. Le corps de `sync_effect` est repris tel quel de `:624-650`,
 celui de `set_purpose` de `:695-700` (il pose `changed = schemaChanged = true`,
 ce qui republie le manifeste avec le nouveau `purpose_label`).
 
-### 5.6 L'AP de secours — **condition non négociable**
+### 5.6 L'AP de secours — **écarté, et pourquoi**
 
-`src/main.cpp:42-55` ne démarre le point d'accès de secours **que si le SSID est
-vide**. Aujourd'hui, si la lampe se retrouve avec une clé Wi-Fi fausse — ce qui
-est exactement ce que `wifi_password` permet à distance, sans aucune
-vérification (`src/pogdev.cpp:788-793` accepte toute chaîne de 8 à 64
-caractères, pose `requiresReboot`, et la lampe redémarre 1,2 s plus tard) — elle
-ne revient pas. Pas de portail, pas d'AP. Sur ce foyer précis, l'écran OLED et
-les boutons sont éteints. Le seul recours est un flash USB.
+Le plan initial exigeait un point d'accès de secours : `src/main.cpp` ne démarre
+l'AP **que si le SSID est vide**, donc une lampe à qui l'on a poussé une
+mauvaise clé Wi-Fi ne revenait pas. Pas de portail, pas d'AP, écran et boutons
+éteints sur ce foyer : le seul recours était un flash USB.
 
-Retirer `wifi_password` du manifeste ferme cette porte. Mais il faut en rendre
-une autre, sinon on retire un rattrapage sans en donner un : **après plusieurs
-échecs consécutifs de connexion en mode station, démarrer l'AP de secours**. Le
-code existe déjà en entier (`startAP()` à `src/main.cpp:25-30`, puis
-`webBegin(true)`), il n'est simplement jamais atteint quand le SSID est rempli.
+Sauf que la porte par laquelle cette mauvaise clé entrait, c'était
+`wifi_password` — une entité écrivable à distance, sans aucune vérification.
+**Cette PR la ferme.** Le risque contre lequel l'AP de secours assurait
+disparaît dans le même mouvement que l'assurance ; il n'y a plus de recours à
+rendre, parce qu'il n'y a plus rien qui prenne.
 
-Implémentation : dans `loop()` (`src/main.cpp:58-75`), compter le temps écoulé
-sans `WL_CONNECTED` après le premier `wifiStaConnect()`, et au-delà d'un seuil
-franc (deux minutes est raisonnable, à confirmer au banc), basculer en
-`WIFI_AP_STA` par `startAP()` puis relancer `webBegin(true)` — sans couper la
-tentative station, qui doit continuer et reprendre la main si le réseau revient.
-Le rendu LED ne dépend jamais du réseau (`ledsLoop()` tourne en tête de boucle),
-il n'est donc pas affecté.
+Et le prix était élevé. Un AP de secours déclenché sur une simple lecture de
+`WiFi.status()` s'ouvre à chaque redémarrage de box, à chaque déauth, à chaque
+changement de canal — un réseau **ouvert, sans mot de passe**, au SSID fixe
+`PogLight-Setup`, avec DNS captif, servi par une lampe en service. Un rattrapage
+qui s'allume à chaque hoquet du réseau n'est pas un rattrapage.
 
-**Cette modification conditionne toutes les autres.** Sans elle, la version ne
-part pas.
+Reste le cas où le réseau change vraiment (le propriétaire change sa clé,
+déménage). Il existait à l'identique avant cette PR et n'est pas aggravé par
+elle : le comportement est celui de la 0.1.5 qui tourne aujourd'hui au foyer.
+S'il faut y répondre un jour, ce sera dans sa propre PR, et à trois conditions
+qu'un secours correct doit tenir : AP **protégé par clé WPA2**, déclenchement
+sur une absence **stable** — un horodatage réarmé à chaque association, pas posé
+une fois au démarrage — et une fenêtre de stabilité avant de refermer.
 
 ### 5.7 Le tampon MQTT — `src/pogdev.cpp:907-934`
 
@@ -554,11 +554,10 @@ l'étape 0 ci-dessous, qui est bloquante.
    celles que l'intégration Home Assistant y replie. Un firmware qui émettrait
    `"config"` avant ne casse rien, il ne gagne simplement pas le rang.
 2. **Écrire le firmware** : §5.1 à §5.9, dans une seule branche, une seule PR,
-   une seule version. Ne pas fractionner : chaque flash est un risque, et §5.6
-   conditionne §5.2.
+   une seule version. Ne pas fractionner : chaque flash est un risque.
 3. **Vérifier au banc, pas au foyer.** Sur une lampe de test : manifeste à 11
-   entités, AP de secours qui démarre sur un SSID valide mais une clé fausse,
-   portail joignable sur `192.168.4.1`, retour du réseau qui reprend la main.
+   entités, portail joignable, et — SSID valide mais clé fausse — **aucun** AP
+   ouvert qui apparaisse, la station continuant seule ses tentatives.
 4. **Publier la version.** La CI construit et publie sur `push` vers `main`
    (`.github/workflows/ci-release.yml`), en ignorant les chemins `**.md` — ce
    document seul ne déclenche donc aucun build. **Publier une release ne
@@ -769,12 +768,9 @@ déclare et que personne n'audite est le pire des deux mondes.
 « Active »), `ssid` et `wifiPass` avec scan. Aucun réglage n'existait uniquement
 comme entité MQTT.
 
-**Le secours réseau (§5.6).** `main.cpp` ouvre le point d'accès après deux
-minutes sans association, rappelle `wifiStaConnect()` juste après le basculement
-en `WIFI_AP_STA` — sans quoi on gagnerait le portail et on perdrait le retour
-automatique du réseau — et referme l'AP dès que la station reprend la main.
-`webBegin` n'étant pas idempotent, la bascule du portail captif passe par un
-`webSetCaptivePortal(bool)` qui ne touche que le DNS et la redirection.
+**Le secours réseau (§5.6).** Écarté. `main.cpp` est inchangé par rapport à la
+0.1.5 : aucun point d'accès ne s'ouvre tant qu'un SSID est configuré. La lampe
+s'appuie sur la reconnexion automatique d'Arduino, comme aujourd'hui au foyer.
 
 **Le tampon MQTT (§5.7).** `ensureMqttBuffer` ne redimensionne **qu'à la
 hausse**, teste le retour et le trace. Le tampon de connexion descend de 24 Kio

@@ -390,16 +390,6 @@ void webBegin(bool apMode) {
   if (!apMode) otaUpdateBegin();
 }
 
-// webBegin n'est pas idempotent : il reenregistre toutes les routes et rappelle
-// server.begin(). Le secours WiFi n'a besoin que du DNS captif et de la
-// redirection 302, d'ou cette bascule minimale.
-void webSetCaptivePortal(bool enabled) {
-  if (s_apMode == enabled) return;
-  s_apMode = enabled;
-  if (enabled) dns.start(DNS_PORT, "*", AP_IP);
-  else dns.stop();
-}
-
 void webLoop() {
   if (s_apMode) dns.processNextRequest();
   server.handleClient();

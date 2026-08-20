@@ -29,14 +29,6 @@ static void startAP() {
   Serial.printf("[AP] %s -> http://192.168.4.1\n", AP_SSID);
 }
 
-// Delai avant le point d'acces de secours. Le mot de passe WiFi n'est plus une
-// entite : PogHome ne peut plus sortir la lampe du reseau a distance. En
-// echange il faut un rattrapage local, parce que sur une carte sans ecran ni
-// boutons une lampe hors reseau n'a plus aucune interface du tout.
-static const uint32_t FALLBACK_AP_DELAY_MS = 120000;
-static uint32_t s_staStartedAt = 0;
-static bool     s_fallbackAp   = false;
-
 void setup() {
   Serial.begin(115200);
   delay(150);
@@ -56,7 +48,6 @@ void setup() {
     WiFi.setMinSecurity(WIFI_AUTH_OPEN);
     WiFi.setHostname(MDNS_NAME);
     wifiStaConnect();
-    s_staStartedAt = millis();
     webBegin(false);
   } else {
     startAP();
@@ -70,34 +61,6 @@ void loop() {
   uint32_t now = millis();
   static uint32_t lastFrame = 0;
   if (now - lastFrame >= 16) { lastFrame = now; ledsLoop(); }
-
-  // Secours reseau : au-dela du delai sans association, on ouvre le point
-  // d'acces SANS abandonner la station. WIFI_AP_STA peut avorter la tentative
-  // en cours, d'ou le wifiStaConnect() immediat ; la station continue ensuite
-  // d'essayer et reprend la main des que le reseau revient.
-  if (s_staStartedAt) {
-    bool connected = WiFi.status() == WL_CONNECTED;
-    if (!s_fallbackAp && !connected && now - s_staStartedAt >= FALLBACK_AP_DELAY_MS) {
-      s_fallbackAp = true;
-      Serial.println("[WiFi] reseau injoignable, point d'acces de secours");
-      startAP();
-      wifiStaConnect();
-      webSetCaptivePortal(true);
-    } else if (s_fallbackAp && connected) {
-      s_fallbackAp = false;
-      webSetCaptivePortal(false);
-      WiFi.softAPdisconnect(true);
-      Serial.println("[WiFi] reseau revenu, point d'acces de secours referme");
-    } else if (s_fallbackAp && !connected) {
-      // La reconnexion automatique d'Arduino ne se declenche que sur evenement
-      // de deconnexion : on relance la tentative periodiquement.
-      static uint32_t nextStaRetry = 0;
-      if ((int32_t)(now - nextStaRetry) >= 0) {
-        wifiStaConnect();
-        nextStaRetry = now + 60000;
-      }
-    }
-  }
 
   // mDNS demarre des que la connexion (asynchrone) est etablie.
   static bool mdns = false;
