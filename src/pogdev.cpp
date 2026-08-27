@@ -13,6 +13,7 @@
 #include <FastLED.h>
 
 #include "config.h"
+#include "pogdev_retry.h"
 
 #ifndef POGLIGHT_FW_VERSION
 #define POGLIGHT_FW_VERSION "dev"
@@ -22,7 +23,6 @@ namespace {
 
 constexpr char kNamespace[] = "pogdev";
 constexpr uint32_t kStatePeriodMs = 30000;
-constexpr uint32_t kReconnectPeriodMs = 5000;
 // Palier de reprise après une publication refusée : on double jusqu’au plafond.
 constexpr uint32_t kMinBackoffMs = 500;
 constexpr uint32_t kMaxBackoffMs = 30000;
@@ -60,6 +60,9 @@ volatile bool stateDirty = true;
 volatile bool helloDirty = true;
 volatile uint32_t rebootAt = 0;
 uint8_t lastActivePattern = TP_RAINBOW;
+pogdev::Backoff mqttBackoff;
+pogdev::AuthGate authGate;
+pogdev::OfflineWatch offlineWatch;
 
 const char *kEffectNames[TP_COUNT] = {
     "Uni", "Ordre couleurs", "Pixel mobile", "Remplissage", "Arc-en-ciel",
@@ -898,11 +901,24 @@ bool connectMqtt() {
   if (!ok) {
     if (mqtt.state() == MQTT_CONNECT_UNAUTHORIZED ||
         mqtt.state() == MQTT_CONNECT_BAD_CREDENTIALS) {
-      Serial.println("[PogHome] identifiants refusés, nouvelle adoption requise");
-      clearIdentity();
+      // Un CONNACK refusé n'est plus un ordre d'oubli : pendant que POG Home
+      // redémarre, le courtier refuse avec des comptes pas encore
+      // reprovisionnés, et l'effacement coûtait l'adoption entière du foyer —
+      // irrécupérable sans humain (panne du 27 août 2026). La relève tranche à
+      // sa place : 404 = vraiment oublié (announceAndCollect efface),
+      // « pending » = demande de ré-adoption posée dans l'inventaire,
+      // « adopted » = identifiants neufs enregistrés.
+      if (pogdev::authGateRejected(authGate, millis()) &&
+          (poghomeAddress || discoverPogHome())) {
+        Serial.println("[PogHome] identifiants refusés avec insistance : "
+                       "relève auprès de POG Home");
+        announceAndCollect(false);
+      }
     }
     return false;
   }
+  pogdev::authGateConnected(authGate);
+  pogdev::backoffConnected(mqttBackoff);
   String cmdTopic = "pog/" + credentials.deviceId + "/cmd";
   mqtt.subscribe(cmdTopic.c_str(), 1);
   mqtt.publish(statusTopic.c_str(), "online", true);
@@ -928,7 +944,21 @@ void pogdevTask(void *) {
 
   for (;;) {
     uint32_t now = millis();
-    if (WiFi.status() != WL_CONNECTED) {
+    bool wifiUp = WiFi.status() == WL_CONNECTED;
+    // Le filet du 27 août : le remède constaté était de débrancher puis
+    // rebrancher chaque lampe. Trente minutes continues adoptée, Wi-Fi debout
+    // et courtier absent, et on refait ce geste tout seul — ça guérit aussi ce
+    // que le code ne sait pas énumérer (sockets épuisées, pile figée). La
+    // lampe revient sur son motif sauvegardé : le geste coûte un battement.
+    if (pogdev::offlineWatchTick(
+            offlineWatch, wifiUp && credentials.valid() && !mqtt.connected(),
+            now)) {
+      Serial.println("[PogHome] 30 min sans courtier malgré le Wi-Fi : "
+                     "redémarrage");
+      delay(80);
+      ESP.restart();
+    }
+    if (!wifiUp) {
       mqtt.disconnect();
       vTaskDelay(pdMS_TO_TICKS(1000));
       continue;
@@ -952,17 +982,24 @@ void pogdevTask(void *) {
       }
     } else if (!mqtt.connected()) {
       if ((int32_t)(now - nextReconnect) >= 0) {
-        if (!connectMqtt() && credentials.valid() &&
-            (int32_t)(now - nextRediscovery) >= 0) {
-          // Le bail DHCP de PogHome peut changer sans invalider l'adoption.
-          poghomeAddress = IPAddress();
-          if (discoverPogHome()) {
-            credentials.host = poghomeAddress.toString();
-            saveCredentials(credentials);
+        if (connectMqtt()) {
+          nextReconnect = now;
+        } else {
+          if (credentials.valid() && (int32_t)(now - nextRediscovery) >= 0) {
+            // Le bail DHCP de PogHome peut changer sans invalider l'adoption.
+            poghomeAddress = IPAddress();
+            if (discoverPogHome()) {
+              credentials.host = poghomeAddress.toString();
+              saveCredentials(credentials);
+            }
+            nextRediscovery = now + 30000;
           }
-          nextRediscovery = now + 30000;
+          // Reprise sans fin : 5 s doublées jusqu'à 60 s. Le pas ne revient à
+          // la base qu'au CONNACK accepté (backoffConnected), jamais avant —
+          // une lampe murale doit retrouver un courtier qui revient des heures
+          // plus tard sans le marteler quand il est absent.
+          nextReconnect = now + pogdev::backoffNextDelayMs(mqttBackoff);
         }
-        nextReconnect = now + kReconnectPeriodMs;
       }
     } else {
       mqtt.loop();
