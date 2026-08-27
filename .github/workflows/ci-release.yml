@@ -29,6 +29,19 @@ jobs:
             src/web_ui.h > /tmp/poglight-dashboard.js
           node --check /tmp/poglight-dashboard.js
 
+  host-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      # La politique de reprise MQTT est pure (include/pogdev_retry.h) : elle
+      # se vérifie ici, sans PlatformIO ni matériel — contrairement à
+      # test/host/run.sh qui a besoin des libdeps d'un build pio.
+      - name: Compile and run reconnect policy tests
+        run: |
+          c++ -std=c++17 -Wall -Wextra -Werror -I include \
+            test/host/test_pogdev_retry.cpp -o /tmp/poglight-pogdev-retry-test
+          /tmp/poglight-pogdev-retry-test
+
   prepare:
     runs-on: ubuntu-latest
     outputs:
@@ -65,7 +78,7 @@ jobs:
           echo "bumped=$BUMPED" >> "$GITHUB_OUTPUT"
 
   build:
-    needs: [prepare, web-tests]
+    needs: [prepare, web-tests, host-tests]
     runs-on: ubuntu-latest
     env:
       POGLIGHT_BUILD_VERSION: ${{ needs.prepare.outputs.version }}
