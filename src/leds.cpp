@@ -1,6 +1,7 @@
 #include <FastLED.h>
 #include <sys/time.h>
 #include "config.h"
+#include "effect_sync.h"
 #include "leds.h"
 
 volatile int g_walkPos = 0;
@@ -9,6 +10,8 @@ static CRGB    work[MAX_LEDS];     // tampon logique (R,V,B)
 static CRGB    out[MAX_LEDS];      // tampon envoye a FastLED (apres permutation d'ordre)
 static uint16_t g_num = 60;
 static bool    g_analog = false;
+static portMUX_TYPE g_effectSyncMux = portMUX_INITIALIZER_UNLOCKED;
+static pogdev::EffectSync g_effectSync;
 
 // FastLED en RGB fixe : l'ordre reel est applique en logiciel (permutation).
 static void addLedsForPin(uint8_t pin, uint16_t count) {
@@ -114,6 +117,13 @@ static uint32_t animationClockMs() {
     return (uint32_t)((uint64_t)tv.tv_sec * 1000ULL + tv.tv_usec / 1000ULL);
   }
   return millis();
+}
+
+static uint64_t unixClockMs() {
+  timeval tv{};
+  gettimeofday(&tv, nullptr);
+  if (tv.tv_sec <= 1700000000) return 0;
+  return (uint64_t)tv.tv_sec * 1000ULL + tv.tv_usec / 1000ULL;
 }
 
 static uint8_t breatheLevel(uint32_t now, uint16_t cycleMs) {
@@ -270,6 +280,18 @@ static void renderPattern(uint16_t start, uint16_t count, uint8_t pattern,
   }
 }
 
+static void renderSharedAudio(const pogdev::EffectFrame& frame,
+                              pogdev::EffectVisualizer visualizer) {
+  for (uint16_t i = 0; i < g_num; ++i) {
+    const float position = pogdev::effectPixelPosition(i, g_num);
+    const pogdev::EffectPixel pixel =
+        pogdev::effectVisualizerPixel(visualizer, position, frame);
+    work[i] = CHSV(static_cast<uint8_t>(pixel.hue * 255.0f),
+                   static_cast<uint8_t>(pixel.saturation * 255.0f),
+                   static_cast<uint8_t>(pixel.value * 255.0f));
+  }
+}
+
 void ledsLoop() {
   Config snapshot;
   if (xSemaphoreTake(g_configMutex, 0) != pdTRUE) return;
@@ -299,7 +321,18 @@ void ledsLoop() {
   }
 
   // --- Mode adressable ---
-  if (!snapshot.sectionCount) {
+  pogdev::EffectFrame shared;
+  pogdev::EffectVisualizer sharedVisualizer =
+      pogdev::EffectVisualizer::Spectrum;
+  bool following = false;
+  portENTER_CRITICAL(&g_effectSyncMux);
+  following = pogdev::effectSyncSample(g_effectSync, millis(), unixClockMs(),
+                                       shared);
+  sharedVisualizer = g_effectSync.visualizer;
+  portEXIT_CRITICAL(&g_effectSyncMux);
+  if (following) {
+    renderSharedAudio(shared, sharedVisualizer);
+  } else if (!snapshot.sectionCount) {
     renderPattern(0, g_num, snapshot.pattern, snapshot.speed,
                   snapshot.primaryColor, snapshot.secondaryColor, now);
   } else {
@@ -321,6 +354,44 @@ void ledsLoop() {
     }
   }
   showAddressable(snapshot.brightness, snapshot.maxMilliAmps, snapshot.reverse);
+}
+
+bool ledsEffectSyncJoin(const char *groupId, const char *leaderEntityId,
+                        uint16_t presentationDelayMs,
+                        int16_t calibrationOffsetMs,
+                        const char *visualizer) {
+  bool ok;
+  portENTER_CRITICAL(&g_effectSyncMux);
+  ok = pogdev::effectSyncJoin(g_effectSync, groupId, "follower",
+                              leaderEntityId, presentationDelayMs,
+                              calibrationOffsetMs, visualizer);
+  portEXIT_CRITICAL(&g_effectSyncMux);
+  return ok;
+}
+
+bool ledsEffectSyncLeave(const char *groupId) {
+  bool ok;
+  portENTER_CRITICAL(&g_effectSyncMux);
+  ok = pogdev::effectSyncLeave(g_effectSync, groupId);
+  portEXIT_CRITICAL(&g_effectSyncMux);
+  return ok;
+}
+
+void ledsEffectSyncCancel() {
+  portENTER_CRITICAL(&g_effectSyncMux);
+  g_effectSync = pogdev::EffectSync{};
+  portEXIT_CRITICAL(&g_effectSyncMux);
+}
+
+bool ledsEffectSyncFrame(uint32_t seq, uint64_t monoMs, uint64_t presentAtMs,
+                         uint16_t leadMs, float level, float bass, float treble,
+                         uint32_t receivedMs) {
+  bool ok;
+  portENTER_CRITICAL(&g_effectSyncMux);
+  ok = pogdev::effectSyncPush(g_effectSync, seq, monoMs, presentAtMs, leadMs,
+                              level, bass, treble, receivedMs);
+  portEXIT_CRITICAL(&g_effectSyncMux);
+  return ok;
 }
 
 String ledsSnapshot() {

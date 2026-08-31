@@ -13,6 +13,9 @@
 #include <FastLED.h>
 
 #include "config.h"
+#include "effect_sync.h"
+#include "leds.h"
+#include "poghome_discovery.h"
 #include "pogdev_retry.h"
 
 #ifndef POGLIGHT_FW_VERSION
@@ -63,6 +66,8 @@ uint8_t lastActivePattern = TP_RAINBOW;
 pogdev::Backoff mqttBackoff;
 pogdev::AuthGate authGate;
 pogdev::OfflineWatch offlineWatch;
+String effectGroupId;
+String effectFrameTopic;
 
 const char *kEffectNames[TP_COUNT] = {
     "Uni", "Ordre couleurs", "Pixel mobile", "Remplissage", "Arc-en-ciel",
@@ -127,7 +132,8 @@ void addColorEntity(JsonArray entities, const String &key, const String &name,
 // « purpose » ; ce sont désormais deux commandes du trait `action` porté par
 // l'entité meneuse « light ». Le trait `action` a le domaine "switch" côté
 // PogHome, donc il ne déloge pas le domaine "light" : le slug reste le même.
-void addLightActions(JsonArray traits, const char *const *purposeLabels) {
+void addLightActions(JsonArray traits, const char *const *purposeLabels,
+                     bool effectSyncCapable) {
   JsonObject trait = traits.add<JsonObject>();
   trait["id"] = "action";
   JsonArray commands = trait["config"]["commands"].to<JsonArray>();
@@ -173,6 +179,57 @@ void addLightActions(JsonArray traits, const char *const *purposeLabels) {
   purposeParam["required"] = true;
   JsonArray purposeOptions = purposeParam["enum"].to<JsonArray>();
   for (uint8_t i = 0; i < LP_COUNT; ++i) purposeOptions.add(purposeLabels[i]);
+
+  if (!effectSyncCapable) return;
+  auto stringParam = [](JsonArray params, const char *name,
+                        const char *const *values = nullptr,
+                        size_t valueCount = 0) {
+    JsonObject param = params.add<JsonObject>();
+    param["name"] = name;
+    param["kind"] = values ? "enum" : "string";
+    param["required"] = true;
+    if (values) {
+      JsonArray options = param["enum"].to<JsonArray>();
+      for (size_t i = 0; i < valueCount; ++i) options.add(values[i]);
+    }
+  };
+  JsonObject join = commands.add<JsonObject>();
+  join["name"] = "join_effect_group";
+  join["label"] = "Suivre une ambiance musicale";
+  join["sensitive"] = false;
+  join["reversible"] = true;
+  JsonArray joinParams = join["params"].to<JsonArray>();
+  stringParam(joinParams, "group_id");
+  static const char *roles[] = {"leader", "follower"};
+  stringParam(joinParams, "role", roles, 2);
+  stringParam(joinParams, "leader_entity_id");
+  auto timingNumber = [](JsonArray params, const char *name, int min,
+                         int max) {
+    JsonObject param = params.add<JsonObject>();
+    param["name"] = name;
+    param["kind"] = "number";
+    param["required"] = true;
+    param["min"] = min;
+    param["max"] = max;
+  };
+  timingNumber(joinParams, "presentation_delay_ms", 0, 500);
+  timingNumber(joinParams, "calibration_offset_ms", -100, 100);
+  static const char *visualizers[] = {"spectrum", "vu_meter", "bass_pulse",
+                                      "rainbow"};
+  JsonObject visualizer = joinParams.add<JsonObject>();
+  visualizer["name"] = "visualizer";
+  visualizer["kind"] = "enum";
+  visualizer["required"] = false;
+  visualizer["default"] = "spectrum";
+  JsonArray visualizerOptions = visualizer["enum"].to<JsonArray>();
+  for (const char *option : visualizers) visualizerOptions.add(option);
+
+  JsonObject leave = commands.add<JsonObject>();
+  leave["name"] = "leave_effect_group";
+  leave["label"] = "Quitter l’ambiance musicale";
+  leave["sensitive"] = false;
+  leave["reversible"] = true;
+  stringParam(leave["params"].to<JsonArray>(), "group_id");
 }
 
 int purposeFromLabel(const String &option) {
@@ -246,19 +303,40 @@ void clearIdentity() {
 
 bool discoverPogHome() {
   int count = MDNS.queryService("poghome", "tcp");
+  pogdev::PogHomeCandidate selected;
+  int selectedIndex = -1;
+  const IPAddress localAddress = WiFi.localIP();
+  const IPAddress subnetMask = WiFi.subnetMask();
+  const uint32_t localIpv4 = static_cast<uint32_t>(localAddress);
+  const uint32_t mask = static_cast<uint32_t>(subnetMask);
+
   for (int i = 0; i < count; ++i) {
     String proto = MDNS.txt(i, "proto");
-    if (proto.length() && proto != "1") continue;
-    poghomeAddress = MDNS.address(i);
-    if (!poghomeAddress) continue;
+    uint8_t protocol = proto.length() ? (proto == "1" ? 1 : 255) : 0;
+    IPAddress address = MDNS.address(i);
     String api = MDNS.txt(i, "api");
-    poghomeApiPort = api.length() ? api.toInt() : MDNS.port(i);
-    if (!poghomeApiPort) poghomeApiPort = 8090;
-    Serial.printf("[PogHome] détecté sur %s:%u\n",
-                  poghomeAddress.toString().c_str(), poghomeApiPort);
-    return true;
+    long parsedApiPort = api.length() ? api.toInt() : MDNS.port(i);
+    if (parsedApiPort <= 0 || parsedApiPort > 65535) parsedApiPort = 8090;
+    pogdev::PogHomeCandidate candidate{
+        static_cast<uint32_t>(address), static_cast<uint16_t>(parsedApiPort),
+        protocol};
+    if (!pogdev::pogHomeCandidateBetter(candidate, selected, localIpv4, mask)) {
+      continue;
+    }
+    selected = candidate;
+    selectedIndex = i;
   }
-  return false;
+
+  if (selectedIndex < 0) return false;
+  poghomeAddress = MDNS.address(selectedIndex);
+  poghomeApiPort = selected.apiPort;
+  Serial.printf("[PogHome] détecté sur %s:%u (%s, proto=%s)\n",
+                poghomeAddress.toString().c_str(), poghomeApiPort,
+                pogdev::pogHomeCandidateSameSubnet(selected, localIpv4, mask)
+                    ? "réseau local"
+                    : "repli hors sous-réseau",
+                selected.protocol == 1 ? "1" : "ancien");
+  return true;
 }
 
 String apiUrl(const String &path) {
@@ -393,6 +471,7 @@ void publishHello() {
   doc["model"] = "POG Light";
   doc["fw_version"] = POGLIGHT_FW_VERSION;
   doc["name"] = "PogLight";
+  if (!snapshot.analog) doc["features"].to<JsonArray>().add("effect_sync_v1");
   JsonArray entities = doc["entities"].to<JsonArray>();
 
   const char *purposeLabels[LP_COUNT];
@@ -412,7 +491,7 @@ void publishHello() {
   masterPower["config"]["purpose_label"] = lightPurposeLabel(snapshot.purpose);
   lightTraits.add<JsonObject>()["id"] = "brightness";
   lightTraits.add<JsonObject>()["id"] = "color";
-  addLightActions(lightTraits, purposeLabels);
+  addLightActions(lightTraits, purposeLabels, !snapshot.analog);
 
   addColorEntity(entities, "accent", "Couleur secondaire", "light");
   addSelectEntity(entities, "effect", "Effet", "light", kEffectNames, TP_COUNT);
@@ -635,15 +714,93 @@ void clampSectionsToStrip(Config &config) {
   }
 }
 
-void handleCommand(char *, byte *payload, unsigned int length) {
+void cancelEffectFollow() {
+  if (effectFrameTopic.length() && mqtt.connected()) {
+    mqtt.unsubscribe(effectFrameTopic.c_str());
+  }
+  effectGroupId = "";
+  effectFrameTopic = "";
+  ledsEffectSyncCancel();
+}
+
+void handleCommand(char *topic, byte *payload, unsigned int length) {
   JsonDocument doc;
   if (deserializeJson(doc, payload, length)) return;
+  if (effectFrameTopic.length() && effectFrameTopic == topic) {
+    if (doc["seq"].isNull() || doc["mono_ms"].isNull() ||
+        doc["lead_ms"].isNull() ||
+        doc["level"].isNull() || doc["bass"].isNull() ||
+        doc["treble"].isNull()) {
+      return;
+    }
+    int leadMs = doc["lead_ms"] | -1;
+    if (leadMs < 0 || leadMs > 500) return;
+    uint64_t presentAt = doc["present_at_ms"] | 0ULL;
+    ledsEffectSyncFrame(doc["seq"].as<uint32_t>(),
+                        doc["mono_ms"].as<uint64_t>(),
+                        presentAt,
+                        leadMs,
+                        doc["level"].as<float>(), doc["bass"].as<float>(),
+                        doc["treble"].as<float>(), millis());
+    return;
+  }
   String key = doc["key"].as<String>();
   String name = doc["name"].as<String>();
   JsonObjectConst params = doc["params"].as<JsonObjectConst>();
   bool changed = false;
   bool schemaChanged = false;
   bool requiresReboot = false;
+
+  if (key == "light" && name == "join_effect_group") {
+    Config snapshot;
+    xSemaphoreTake(g_configMutex, portMAX_DELAY);
+    snapshot = g_config;
+    xSemaphoreGive(g_configMutex);
+    String group = params["group_id"].as<String>();
+    String role = params["role"].as<String>();
+    String leader = params["leader_entity_id"].as<String>();
+    int presentationDelay = params["presentation_delay_ms"] | 0;
+    int calibrationOffset = params["calibration_offset_ms"] | 0;
+    String visualizer = params["visualizer"] | "spectrum";
+    pogdev::EffectSync candidate;
+    if (params["presentation_delay_ms"].isNull() ||
+        params["calibration_offset_ms"].isNull() || snapshot.analog ||
+        !pogdev::effectSyncJoin(candidate, group.c_str(), role.c_str(),
+                                leader.c_str(), presentationDelay,
+                                calibrationOffset, visualizer.c_str())) {
+      Serial.println("[PogHome] join_effect_group refusé");
+      return;
+    }
+    String nextTopic = "pog/effects/" + group + "/frame";
+    if (!mqtt.subscribe(nextTopic.c_str(), 0)) {
+      Serial.println("[PogHome] abonnement à l’ambiance refusé");
+      return;
+    }
+    String oldTopic = effectFrameTopic;
+    if (!ledsEffectSyncJoin(group.c_str(), leader.c_str(), presentationDelay,
+                            calibrationOffset, visualizer.c_str())) {
+      mqtt.unsubscribe(nextTopic.c_str());
+      return;
+    }
+    effectGroupId = group;
+    effectFrameTopic = nextTopic;
+    if (oldTopic.length() && oldTopic != nextTopic) mqtt.unsubscribe(oldTopic.c_str());
+    return;
+  }
+  if (key == "light" && name == "leave_effect_group") {
+    String group = params["group_id"].as<String>();
+    if (group == effectGroupId && ledsEffectSyncLeave(group.c_str())) {
+      if (effectFrameTopic.length()) mqtt.unsubscribe(effectFrameTopic.c_str());
+      effectGroupId = "";
+      effectFrameTopic = "";
+    }
+    return;
+  }
+  if (effectFrameTopic.length() &&
+      (key == "light" || key == "accent" || key == "effect" ||
+       key == "speed" || key.startsWith("section_"))) {
+    cancelEffectFollow();
+  }
 
   xSemaphoreTake(g_configMutex, portMAX_DELAY);
   Config before = g_config;
@@ -921,6 +1078,7 @@ bool connectMqtt() {
   pogdev::backoffConnected(mqttBackoff);
   String cmdTopic = "pog/" + credentials.deviceId + "/cmd";
   mqtt.subscribe(cmdTopic.c_str(), 1);
+  if (effectFrameTopic.length()) mqtt.subscribe(effectFrameTopic.c_str(), 0);
   mqtt.publish(statusTopic.c_str(), "online", true);
   publishHello();
   publishState();
