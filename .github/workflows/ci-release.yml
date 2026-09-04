@@ -42,6 +42,19 @@ jobs:
             test/host/test_pogdev_retry.cpp -o /tmp/poglight-pogdev-retry-test
           /tmp/poglight-pogdev-retry-test
 
+      - name: Compile and run effect synchronization tests
+        run: |
+          c++ -std=c++17 -Wall -Wextra -Werror -I include \
+            test/host/test_effect_sync.cpp -o /tmp/poglight-effect-sync-test
+          /tmp/poglight-effect-sync-test
+
+      - name: Compile and run POG Home discovery selection tests
+        run: |
+          c++ -std=c++17 -Wall -Wextra -Werror -I include \
+            test/host/test_poghome_discovery.cpp \
+            -o /tmp/poglight-discovery-test
+          /tmp/poglight-discovery-test
+
   prepare:
     runs-on: ubuntu-latest
     outputs:
